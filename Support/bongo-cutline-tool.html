@@ -1,0 +1,865 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bongo Cut Line Tool</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d10;
+      --panel: #14181d;
+      --panel-2: #1b2027;
+      --line: #ffcf4a;
+      --line-soft: rgba(255, 207, 74, 0.22);
+      --text: #edf0f2;
+      --muted: #9aa4ad;
+      --edge: #2b333d;
+      --accent: #5bc0be;
+      --danger: #ff6b6b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100svh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      letter-spacing: 0;
+    }
+
+    button,
+    input,
+    select {
+      font: inherit;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      min-height: 100svh;
+    }
+
+    .workspace {
+      min-width: 0;
+      padding: 18px;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 14px;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 38px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 650;
+      line-height: 1.2;
+    }
+
+    .status {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: nowrap;
+    }
+
+    .stage-wrap {
+      min-height: 0;
+      display: grid;
+      place-items: center;
+      overflow: auto;
+      border: 1px solid var(--edge);
+      background:
+        linear-gradient(45deg, #0f1216 25%, transparent 25%),
+        linear-gradient(-45deg, #0f1216 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #0f1216 75%),
+        linear-gradient(-45deg, transparent 75%, #0f1216 75%);
+      background-color: #090b0d;
+      background-size: 28px 28px;
+      background-position: 0 0, 0 14px, 14px -14px, -14px 0;
+    }
+
+    .image-frame {
+      position: relative;
+      max-width: min(100%, 1200px);
+      max-height: calc(100svh - 92px);
+      line-height: 0;
+      box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+    }
+
+    .image-frame img {
+      display: block;
+      width: auto;
+      height: auto;
+      max-width: 100%;
+      max-height: calc(100svh - 92px);
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+
+    .overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      touch-action: none;
+      cursor: crosshair;
+    }
+
+    .overlay.is-picking {
+      cursor: copy;
+    }
+
+    .desktop-fill {
+      fill: rgba(255, 207, 74, 0.13);
+      pointer-events: none;
+    }
+
+    .guide {
+      stroke: var(--line);
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.75));
+      pointer-events: stroke;
+      cursor: grab;
+    }
+
+    .guide:active {
+      cursor: grabbing;
+    }
+
+    .rail {
+      stroke: rgba(255, 255, 255, 0.18);
+      stroke-dasharray: 7 7;
+      stroke-width: 1;
+      vector-effect: non-scaling-stroke;
+      pointer-events: none;
+    }
+
+    .handle {
+      fill: var(--bg);
+      stroke: var(--line);
+      stroke-width: 3;
+      vector-effect: non-scaling-stroke;
+      cursor: grab;
+    }
+
+    .handle:active {
+      cursor: grabbing;
+    }
+
+    .sample-marker {
+      fill: none;
+      stroke: #ffffff;
+      stroke-width: 2;
+      vector-effect: non-scaling-stroke;
+      filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.9));
+      pointer-events: none;
+    }
+
+    .sidebar {
+      min-width: 0;
+      border-left: 1px solid var(--edge);
+      background: var(--panel);
+      padding: 18px;
+      overflow: auto;
+    }
+
+    .section {
+      padding: 0 0 18px;
+      margin: 0 0 18px;
+      border-bottom: 1px solid var(--edge);
+    }
+
+    .section:last-child {
+      border-bottom: 0;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .section h2 {
+      margin: 0 0 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .field {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    select,
+    input[type="file"],
+    input[type="number"],
+    textarea {
+      width: 100%;
+      color: var(--text);
+      background: var(--panel-2);
+      border: 1px solid var(--edge);
+      border-radius: 6px;
+      padding: 8px 9px;
+      outline: none;
+    }
+
+    input[type="number"] {
+      font-family: var(--mono);
+    }
+
+    select:focus,
+    input:focus,
+    textarea:focus {
+      border-color: var(--accent);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .swatch-row {
+      display: grid;
+      grid-template-columns: 44px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .swatch {
+      width: 44px;
+      aspect-ratio: 1;
+      border-radius: 6px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      background: #050505;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.45);
+    }
+
+    .readout {
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+
+    .readout.muted {
+      color: var(--muted);
+    }
+
+    button {
+      border: 1px solid var(--edge);
+      background: var(--panel-2);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      min-height: 36px;
+    }
+
+    button:hover {
+      border-color: var(--accent);
+      transform: translateY(-1px);
+      transition: transform 120ms ease, border-color 120ms ease;
+    }
+
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #061112;
+      font-weight: 700;
+    }
+
+    dl {
+      display: grid;
+      grid-template-columns: 122px minmax(0, 1fr);
+      gap: 7px 10px;
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    dt {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    dd {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+
+    textarea {
+      min-height: 122px;
+      resize: vertical;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .toast {
+      color: var(--accent);
+      font-size: 12px;
+      min-height: 18px;
+      margin-top: 8px;
+    }
+
+    .error {
+      color: var(--danger);
+    }
+
+    @media (max-width: 940px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-left: 0;
+        border-top: 1px solid var(--edge);
+      }
+
+      .image-frame,
+      .image-frame img {
+        max-height: 64svh;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="workspace" aria-label="Cut line workspace">
+      <div class="topbar">
+        <h1>Bongo desktop cut line</h1>
+        <div class="status" id="status">Loading image</div>
+      </div>
+      <div class="stage-wrap">
+        <div class="image-frame" id="imageFrame">
+          <img id="keyboardImage" alt="Bongo keyboard background">
+          <svg class="overlay" id="overlay" role="img" aria-label="Draggable desktop cut line">
+            <polygon class="desktop-fill" id="desktopFill"></polygon>
+            <line class="rail" id="leftRail"></line>
+            <line class="rail" id="rightRail"></line>
+            <line class="guide" id="guide"></line>
+            <circle class="handle" id="handleLeft" r="8"></circle>
+            <circle class="handle" id="handleRight" r="8"></circle>
+            <circle class="sample-marker" id="sampleMarker" r="10"></circle>
+          </svg>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <section class="section">
+        <h2>Image</h2>
+        <label class="field">
+          <span class="label">Preset</span>
+          <select id="preset">
+            <option value="standard">BongoCat standard</option>
+            <option value="wendi">Wendi</option>
+            <option value="custom">Custom upload</option>
+          </select>
+        </label>
+        <label class="field">
+          <span class="label">Upload</span>
+          <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+        </label>
+        <div class="actions">
+          <button id="resetLine" type="button">Reset line</button>
+          <button id="centerLine" type="button">Center line</button>
+        </div>
+      </section>
+
+      <section class="section">
+        <h2>Line</h2>
+        <div class="grid">
+          <label class="field">
+            <span class="label">Mid Y ratio</span>
+            <input id="midInput" type="number" step="0.0001" min="-1" max="2">
+          </label>
+          <label class="field">
+            <span class="label">Angle deg</span>
+            <input id="angleInput" type="number" step="0.001" min="-89" max="89">
+          </label>
+        </div>
+        <dl id="metrics"></dl>
+      </section>
+
+      <section class="section">
+        <h2>Color</h2>
+        <div class="swatch-row">
+          <div class="swatch" id="colorSwatch"></div>
+          <div>
+            <div class="readout" id="colorHex">#050505</div>
+            <div class="readout muted" id="colorRgb">rgb(5, 5, 5)</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="pickColor" type="button">Pick from image</button>
+          <button id="copyColorSwift" type="button">Copy Color Swift</button>
+        </div>
+        <textarea id="colorSwiftOut" readonly spellcheck="false" wrap="off"></textarea>
+      </section>
+
+      <section class="section">
+        <h2>Swift</h2>
+        <textarea id="swiftOut" readonly spellcheck="false" wrap="off"></textarea>
+        <div class="actions">
+          <button class="primary" id="copySwift" type="button">Copy Swift</button>
+          <button id="copyJson" type="button">Copy JSON</button>
+        </div>
+        <div class="toast" id="toast"></div>
+      </section>
+    </aside>
+  </main>
+  <canvas id="sampleCanvas" hidden></canvas>
+
+  <script>
+    const presets = {
+      standard: {
+        label: "BongoCat standard",
+        src: "../Sources/Lofii/Resources/BongoCat/standard/resources/background.png",
+        midYRatio: 0.5739,
+        angleDeg: 10.138
+      },
+      wendi: {
+        label: "Wendi",
+        src: "../Sources/Lofii/Resources/BongoCat/wendi/resources/background.png",
+        midYRatio: 0.5510,
+        angleDeg: 9.1
+      }
+    };
+
+    const el = {
+      frame: document.getElementById("imageFrame"),
+      img: document.getElementById("keyboardImage"),
+      overlay: document.getElementById("overlay"),
+      fill: document.getElementById("desktopFill"),
+      guide: document.getElementById("guide"),
+      sampleMarker: document.getElementById("sampleMarker"),
+      leftRail: document.getElementById("leftRail"),
+      rightRail: document.getElementById("rightRail"),
+      left: document.getElementById("handleLeft"),
+      right: document.getElementById("handleRight"),
+      preset: document.getElementById("preset"),
+      file: document.getElementById("fileInput"),
+      status: document.getElementById("status"),
+      reset: document.getElementById("resetLine"),
+      center: document.getElementById("centerLine"),
+      midInput: document.getElementById("midInput"),
+      angleInput: document.getElementById("angleInput"),
+      metrics: document.getElementById("metrics"),
+      swiftOut: document.getElementById("swiftOut"),
+      colorSwatch: document.getElementById("colorSwatch"),
+      colorHex: document.getElementById("colorHex"),
+      colorRgb: document.getElementById("colorRgb"),
+      colorSwiftOut: document.getElementById("colorSwiftOut"),
+      sampleCanvas: document.getElementById("sampleCanvas"),
+      pickColor: document.getElementById("pickColor"),
+      copyColorSwift: document.getElementById("copyColorSwift"),
+      copySwift: document.getElementById("copySwift"),
+      copyJson: document.getElementById("copyJson"),
+      toast: document.getElementById("toast")
+    };
+
+    let currentPreset = "standard";
+    let customURL = "";
+    let imageSize = { width: 0, height: 0 };
+    let line = { x1: 0, y1: 0, x2: 1, y2: 1 };
+    let drag = null;
+    let sample = { x: 0, y: 0, color: { r: 5, g: 5, b: 5 } };
+    let canvasContext = el.sampleCanvas.getContext("2d", { willReadFrequently: true });
+    let colorPicker = { active: false };
+
+    const storageKey = (preset) => `bongoCutLine:${preset}`;
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const fmt = (value, digits = 2) => Number.isFinite(value) ? value.toFixed(digits) : "n/a";
+    const fmtRatio = (value) => Number.isFinite(value) ? value.toFixed(4) : "n/a";
+
+    function loadPreset(name) {
+      currentPreset = name;
+      el.toast.textContent = "";
+      if (name === "custom") {
+        if (customURL) setImage(customURL);
+        return;
+      }
+      setImage(presets[name].src);
+    }
+
+    function setImage(src) {
+      el.status.textContent = "Loading image";
+      el.status.classList.remove("error");
+      el.img.onload = () => {
+        imageSize = {
+          width: el.img.naturalWidth,
+          height: el.img.naturalHeight
+        };
+        el.overlay.setAttribute("viewBox", `0 0 ${imageSize.width} ${imageSize.height}`);
+        syncSampleCanvas();
+        restoreLine();
+        setSample({ x: imageSize.width / 2, y: imageSize.height / 2 }, false);
+        update();
+        el.status.textContent = `${imageSize.width} x ${imageSize.height}px`;
+      };
+      el.img.onerror = () => {
+        el.status.textContent = "Image failed to load";
+        el.status.classList.add("error");
+      };
+      el.img.src = src;
+    }
+
+    function syncSampleCanvas() {
+      el.sampleCanvas.width = imageSize.width;
+      el.sampleCanvas.height = imageSize.height;
+      canvasContext.clearRect(0, 0, imageSize.width, imageSize.height);
+      canvasContext.drawImage(el.img, 0, 0, imageSize.width, imageSize.height);
+    }
+
+    function restoreLine() {
+      const saved = localStorage.getItem(storageKey(currentPreset));
+      if (saved) {
+        try {
+          const parsed = JSON.parse(saved);
+          if (Number.isFinite(parsed.x1) && Number.isFinite(parsed.y1) &&
+              Number.isFinite(parsed.x2) && Number.isFinite(parsed.y2)) {
+            line = constrainLine(parsed);
+            return;
+          }
+        } catch {}
+      }
+
+      const preset = presets[currentPreset] || presets.standard;
+      applyMidAngle(preset.midYRatio, preset.angleDeg);
+    }
+
+    function constrainLine(next) {
+      return {
+        x1: clamp(next.x1, 0, imageSize.width),
+        y1: clamp(next.y1, 0, imageSize.height),
+        x2: clamp(next.x2, 0, imageSize.width),
+        y2: clamp(next.y2, 0, imageSize.height)
+      };
+    }
+
+    function fullWidthLine() {
+      const dx = line.x2 - line.x1;
+      const dy = line.y2 - line.y1;
+      if (Math.abs(dx) < 0.0001) {
+        const y = (line.y1 + line.y2) / 2;
+        return { leftY: y, rightY: y, slope: 0 };
+      }
+      const slope = dy / dx;
+      const leftY = line.y1 + slope * (0 - line.x1);
+      const rightY = line.y1 + slope * (imageSize.width - line.x1);
+      return { leftY, rightY, slope };
+    }
+
+    function computedValues() {
+      const extended = fullWidthLine();
+      const midY = (extended.leftY + extended.rightY) / 2;
+      const midYRatio = midY / imageSize.height;
+      const angleDeg = Math.atan2(extended.rightY - extended.leftY, imageSize.width) * 180 / Math.PI;
+      const angleN = (imageSize.width / imageSize.height) * Math.tan(angleDeg * Math.PI / 180);
+      return { ...extended, midY, midYRatio, angleDeg, angleN };
+    }
+
+    function applyMidAngle(midYRatio, angleDeg) {
+      const midY = midYRatio * imageSize.height;
+      const halfDy = Math.tan(angleDeg * Math.PI / 180) * imageSize.width / 2;
+      line = {
+        x1: 0,
+        y1: clamp(midY - halfDy, 0, imageSize.height),
+        x2: imageSize.width,
+        y2: clamp(midY + halfDy, 0, imageSize.height)
+      };
+      persist();
+    }
+
+    function persist() {
+      localStorage.setItem(storageKey(currentPreset), JSON.stringify(line));
+    }
+
+    function imagePoint(event) {
+      const rect = el.overlay.getBoundingClientRect();
+      return {
+        x: clamp((event.clientX - rect.left) / rect.width * imageSize.width, 0, imageSize.width),
+        y: clamp((event.clientY - rect.top) / rect.height * imageSize.height, 0, imageSize.height)
+      };
+    }
+
+    function setLineAttrs(target, x1, y1, x2, y2) {
+      target.setAttribute("x1", x1);
+      target.setAttribute("y1", y1);
+      target.setAttribute("x2", x2);
+      target.setAttribute("y2", y2);
+    }
+
+    function colorToHex(color) {
+      return `#${[color.r, color.g, color.b]
+        .map((part) => part.toString(16).padStart(2, "0"))
+        .join("")}`;
+    }
+
+    function sampleColor(point) {
+      const x = clamp(Math.round(point.x), 0, imageSize.width - 1);
+      const y = clamp(Math.round(point.y), 0, imageSize.height - 1);
+      try {
+        const data = canvasContext.getImageData(x, y, 1, 1).data;
+        el.toast.classList.remove("error");
+        return { r: data[0], g: data[1], b: data[2] };
+      } catch {
+        el.toast.textContent = "Color picking for preset images needs http://localhost, or use Upload.";
+        el.toast.classList.add("error");
+        return sample.color;
+      }
+    }
+
+    function setSample(point, readPixel = true) {
+      sample.x = clamp(point.x, 0, imageSize.width);
+      sample.y = clamp(point.y, 0, imageSize.height);
+      if (readPixel) {
+        sample.color = sampleColor(point);
+      }
+      updateColor();
+    }
+
+    function colorSwiftSnippet() {
+      const { r, g, b } = sample.color;
+      const name = "black";
+      return [
+        `case .${name}: return "${colorToHex(sample.color)}"`,
+        `case .${name}: return Color(red: ${r}.0 / 255.0, green: ${g}.0 / 255.0, blue: ${b}.0 / 255.0)`,
+        `case .${name}:`,
+        `    return SIMD4<Float>(${r}.0 / 255.0, ${g}.0 / 255.0, ${b}.0 / 255.0, 1)`
+      ].join("\n");
+    }
+
+    function updateColor() {
+      const hex = colorToHex(sample.color);
+      el.colorSwatch.style.background = hex;
+      el.colorHex.textContent = hex;
+      el.colorRgb.textContent = `rgb(${sample.color.r}, ${sample.color.g}, ${sample.color.b}) at ${fmt(sample.x)}, ${fmt(sample.y)}`;
+      el.colorSwiftOut.value = colorSwiftSnippet();
+      el.fill.style.fill = `rgba(${sample.color.r}, ${sample.color.g}, ${sample.color.b}, 0.34)`;
+      el.sampleMarker.setAttribute("cx", sample.x);
+      el.sampleMarker.setAttribute("cy", sample.y);
+    }
+
+    function metricRows(values) {
+      const display = el.img.getBoundingClientRect();
+      return [
+        ["image", `${imageSize.width} x ${imageSize.height}`],
+        ["display", `${fmt(display.width, 1)} x ${fmt(display.height, 1)}`],
+        ["handle A", `${fmt(line.x1)}, ${fmt(line.y1)}`],
+        ["handle B", `${fmt(line.x2)}, ${fmt(line.y2)}`],
+        ["handle A n", `${fmtRatio(line.x1 / imageSize.width)}, ${fmtRatio(line.y1 / imageSize.height)}`],
+        ["handle B n", `${fmtRatio(line.x2 / imageSize.width)}, ${fmtRatio(line.y2 / imageSize.height)}`],
+        ["left/right Y", `${fmt(values.leftY)} / ${fmt(values.rightY)}`],
+        ["mid Y px", fmt(values.midY)],
+        ["mid Y ratio", fmtRatio(values.midYRatio)],
+        ["slope px", fmt(values.slope, 5)],
+        ["angle deg", fmt(values.angleDeg, 3)],
+        ["angle N", fmt(values.angleN, 5)]
+      ];
+    }
+
+    function swiftSnippet(values) {
+      return [
+        `static let cutLineMidYRatio: CGFloat = ${fmtRatio(values.midYRatio)}`,
+        `static let cutLineAngleDeg: CGFloat = ${fmt(values.angleDeg, 3)}`
+      ].join("\n");
+    }
+
+    function jsonPayload(values) {
+      return JSON.stringify({
+        preset: currentPreset,
+        image: imageSize,
+        handlesPx: {
+          left: { x: Number(line.x1.toFixed(2)), y: Number(line.y1.toFixed(2)) },
+          right: { x: Number(line.x2.toFixed(2)), y: Number(line.y2.toFixed(2)) }
+        },
+        fullWidthPx: {
+          leftY: Number(values.leftY.toFixed(2)),
+          rightY: Number(values.rightY.toFixed(2))
+        },
+        cutLineMidYRatio: Number(values.midYRatio.toFixed(4)),
+        cutLineAngleDeg: Number(values.angleDeg.toFixed(3)),
+        cutLineAngleN: Number(values.angleN.toFixed(5)),
+        sampledDesktopColor: {
+          hex: colorToHex(sample.color),
+          rgb: sample.color,
+          pointPx: {
+            x: Number(sample.x.toFixed(2)),
+            y: Number(sample.y.toFixed(2))
+          }
+        }
+      }, null, 2);
+    }
+
+    function update() {
+      if (!imageSize.width || !imageSize.height) return;
+      const values = computedValues();
+      const bottom = imageSize.height;
+
+      setLineAttrs(el.guide, 0, values.leftY, imageSize.width, values.rightY);
+      setLineAttrs(el.leftRail, line.x1, 0, line.x1, imageSize.height);
+      setLineAttrs(el.rightRail, line.x2, 0, line.x2, imageSize.height);
+      el.left.setAttribute("cx", line.x1);
+      el.left.setAttribute("cy", line.y1);
+      el.right.setAttribute("cx", line.x2);
+      el.right.setAttribute("cy", line.y2);
+      el.fill.setAttribute("points", `0,${values.leftY} ${imageSize.width},${values.rightY} ${imageSize.width},${bottom} 0,${bottom}`);
+
+      el.metrics.innerHTML = metricRows(values)
+        .map(([key, value]) => `<dt>${key}</dt><dd>${value}</dd>`)
+        .join("");
+      el.midInput.value = fmtRatio(values.midYRatio);
+      el.angleInput.value = fmt(values.angleDeg, 3);
+      el.swiftOut.value = swiftSnippet(values);
+      updateColor();
+    }
+
+    function startDrag(kind, event) {
+      event.preventDefault();
+      if (colorPicker.active) {
+        setSample(imagePoint(event), true);
+        colorPicker.active = false;
+        el.overlay.classList.remove("is-picking");
+        el.pickColor.textContent = "Pick from image";
+        return;
+      }
+      const point = imagePoint(event);
+      drag = {
+        kind,
+        startPoint: point,
+        startLine: { ...line }
+      };
+      el.overlay.setPointerCapture(event.pointerId);
+    }
+
+    function onPointerMove(event) {
+      if (!drag) return;
+      const point = imagePoint(event);
+      if (drag.kind === "left") {
+        line.x1 = point.x;
+        line.y1 = point.y;
+      } else if (drag.kind === "right") {
+        line.x2 = point.x;
+        line.y2 = point.y;
+      } else {
+        const dx = point.x - drag.startPoint.x;
+        const dy = point.y - drag.startPoint.y;
+        line = constrainLine({
+          x1: drag.startLine.x1 + dx,
+          y1: drag.startLine.y1 + dy,
+          x2: drag.startLine.x2 + dx,
+          y2: drag.startLine.y2 + dy
+        });
+      }
+      persist();
+      update();
+    }
+
+    function endDrag(event) {
+      if (!drag) return;
+      drag = null;
+      try {
+        el.overlay.releasePointerCapture(event.pointerId);
+      } catch {}
+    }
+
+    async function copyText(text, label) {
+      try {
+        await navigator.clipboard.writeText(text);
+        el.toast.textContent = `${label} copied`;
+      } catch {
+        el.toast.textContent = "Clipboard unavailable";
+        el.toast.classList.add("error");
+      }
+    }
+
+    el.preset.addEventListener("change", () => loadPreset(el.preset.value));
+    el.file.addEventListener("change", () => {
+      const file = el.file.files && el.file.files[0];
+      if (!file) return;
+      if (customURL) URL.revokeObjectURL(customURL);
+      customURL = URL.createObjectURL(file);
+      el.preset.value = "custom";
+      loadPreset("custom");
+    });
+
+    el.reset.addEventListener("click", () => {
+      localStorage.removeItem(storageKey(currentPreset));
+      restoreLine();
+      update();
+    });
+
+    el.center.addEventListener("click", () => {
+      applyMidAngle(0.5, computedValues().angleDeg);
+      update();
+    });
+
+    el.midInput.addEventListener("change", () => {
+      applyMidAngle(Number(el.midInput.value), computedValues().angleDeg);
+      update();
+    });
+
+    el.angleInput.addEventListener("change", () => {
+      applyMidAngle(computedValues().midYRatio, Number(el.angleInput.value));
+      update();
+    });
+
+    el.left.addEventListener("pointerdown", (event) => startDrag("left", event));
+    el.right.addEventListener("pointerdown", (event) => startDrag("right", event));
+    el.guide.addEventListener("pointerdown", (event) => startDrag("line", event));
+    el.overlay.addEventListener("pointerdown", (event) => {
+      if (!colorPicker.active || event.target !== el.overlay) return;
+      startDrag("sample", event);
+    });
+    el.overlay.addEventListener("pointermove", onPointerMove);
+    el.overlay.addEventListener("pointerup", endDrag);
+    el.overlay.addEventListener("pointercancel", endDrag);
+
+    el.pickColor.addEventListener("click", () => {
+      colorPicker.active = !colorPicker.active;
+      el.overlay.classList.toggle("is-picking", colorPicker.active);
+      el.pickColor.textContent = colorPicker.active ? "Click image" : "Pick from image";
+    });
+    el.copyColorSwift.addEventListener("click", () => copyText(el.colorSwiftOut.value, "Color Swift"));
+    el.copySwift.addEventListener("click", () => copyText(el.swiftOut.value, "Swift"));
+    el.copyJson.addEventListener("click", () => copyText(jsonPayload(computedValues()), "JSON"));
+
+    window.addEventListener("resize", update);
+    loadPreset(currentPreset);
+  </script>
+</body>
+</html>

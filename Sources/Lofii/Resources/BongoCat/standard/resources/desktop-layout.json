@@ -1,0 +1,24 @@
+{
+  "preset": "standard",
+  "image": {
+    "width": 612,
+    "height": 354
+  },
+  "handlesPx": {
+    "left": {
+      "x": 0,
+      "y": 148.43
+    },
+    "right": {
+      "x": 612,
+      "y": 257.86
+    }
+  },
+  "fullWidthPx": {
+    "leftY": 148.43,
+    "rightY": 257.86
+  },
+  "cutLineMidYRatio": 0.5739,
+  "cutLineAngleDeg": 10.138,
+  "cutLineAngleN": 0.30912
+}

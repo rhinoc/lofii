@@ -1,0 +1,41 @@
+#import <AppKit/AppKit.h>
+#import <MetalKit/MetalKit.h>
+
+NS_ASSUME_NONNULL_BEGIN
+
+@interface CubismNativeMetalView : MTKView
+
+@property (nonatomic, readonly, getter=isCubismReady) BOOL cubismReady;
+
+- (instancetype)initWithFrame:(NSRect)frameRect
+               modelDirectory:(NSString *)modelDirectory
+                    modelJSON:(NSString *)modelJSON NS_DESIGNATED_INITIALIZER;
+
+- (void)applyParameterValues:(NSDictionary<NSString *, NSNumber *> *)parameterValues;
+- (void)applyMouseCursorXRatio:(double)xRatio yRatio:(double)yRatio mouseMirror:(BOOL)mouseMirror;
+- (void)setCubismAnimating:(BOOL)animating;
+
+@end
+
+@interface CubismNativeMetalRenderer : NSObject
+
+@property (nonatomic, readonly, getter=isCubismReady) BOOL cubismReady;
+
+- (instancetype)initWithDevice:(id<MTLDevice>)device
+                modelDirectory:(NSString *)modelDirectory
+                     modelJSON:(NSString *)modelJSON NS_DESIGNATED_INITIALIZER;
+- (instancetype)init NS_UNAVAILABLE;
+
+- (void)resizeToWidth:(NSUInteger)width height:(NSUInteger)height;
+- (void)applyParameterValues:(NSDictionary<NSString *, NSNumber *> *)parameterValues;
+- (void)applyMouseCursorXRatio:(double)xRatio yRatio:(double)yRatio mouseMirror:(BOOL)mouseMirror;
+/// Starts a random motion from the primary motion group. Returns `NO` if a tap-triggered motion is already playing or the model has no motions.
+- (BOOL)tryStartRandomTapMotion;
+- (void)drawWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
+          renderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor
+                      viewport:(MTLViewport)viewport
+                     deltaTime:(double)deltaTime;
+
+@end
+
+NS_ASSUME_NONNULL_END

@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.4"
+
+      - name: Install Live2D Cubism Core
+        env:
+          CUBISM_NATIVE_SDK_URL: ${{ vars.CUBISM_NATIVE_SDK_URL }}
+          CUBISM_NATIVE_SDK_SHA256: ${{ vars.CUBISM_NATIVE_SDK_SHA256 }}
+        run: scripts/install_cubism_core.sh
+
+      - name: Swift build
+        run: swift build -v
+
+      - name: Swift test
+        run: swift test

@@ -1,0 +1,25 @@
+.DS_Store
+.tmp-icon/
+/.build
+/Packages
+xcuserdata/
+DerivedData/
+/dist/
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+
+# Local signing material and credentials. Never commit anything from here.
+/secrets
+
+# Live2D Cubism Core is governed by Live2D's Proprietary Software License and
+# is installed locally/CI from the official Cubism SDK package.
+/Vendor/CubismNativeSDK/Core/
+
+assets/*
+!assets/README.md
+!assets/packs.json
+!assets/app-icon-source.png
+!assets/app-icon-transparent.png
+tools
+docs

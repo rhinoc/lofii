@@ -1,0 +1,6 @@
+{
+  "CatParamLeftHandDown": "ReplaceWithYourModelParameterIdForLeftKeyboardOverlay",
+  "CatParamRightHandDown": "ReplaceWithYourModelParameterIdForRightHandOrArrows",
+  "ParamMouseLeftDown": "ReplaceWithYourModelParameterIdIfDifferent",
+  "ParamMouseRightDown": "ReplaceWithYourModelParameterIdIfDifferent"
+}

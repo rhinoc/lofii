@@ -1,0 +1,36 @@
+{
+  "preset": "custom",
+  "image": {
+    "width": 800,
+    "height": 660
+  },
+  "handlesPx": {
+    "left": {
+      "x": 10.61,
+      "y": 338.54
+    },
+    "right": {
+      "x": 610.61,
+      "y": 464.64
+    }
+  },
+  "fullWidthPx": {
+    "leftY": 336.31,
+    "rightY": 504.45
+  },
+  "cutLineMidYRatio": 0.6369,
+  "cutLineAngleDeg": 11.869,
+  "cutLineAngleN": 0.25475,
+  "sampledDesktopColor": {
+    "hex": "#bf7668",
+    "rgb": {
+      "r": 191,
+      "g": 118,
+      "b": 104
+    },
+    "pointPx": {
+      "x": 400,
+      "y": 330
+    }
+  }
+}

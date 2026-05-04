@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Append a Sparkle <item> for the current release (signed zip). Requires Sparkle bin/sign_update.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$ROOT"
+
+: "${VERSION:?VERSION not set}"
+: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY not set}"
+: "${SPARKLE_ED_PRIVATE_KEY:?SPARKLE_ED_PRIVATE_KEY not set}"
+
+ZIP_NAME="lofii-${VERSION}-macos.zip"
+ZIP_PATH="$ROOT/dist/$ZIP_NAME"
+if [[ ! -f "$ZIP_PATH" ]]; then
+  echo "Missing zip at $ZIP_PATH" >&2
+  exit 1
+fi
+
+SPARKLE_VER="${SPARKLE_RELEASE_VERSION:-2.9.1}"
+TOOLS="${RUNNER_TEMP:-/tmp}/sparkle-sign-${SPARKLE_VER}"
+mkdir -p "$TOOLS"
+SIGN_UPDATE="$(find "$TOOLS" -type f -path '*/bin/sign_update' 2>/dev/null | head -n1 || true)"
+if [[ -z "$SIGN_UPDATE" || ! -x "$SIGN_UPDATE" ]]; then
+  curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VER}/Sparkle-${SPARKLE_VER}.tar.xz" \
+    | tar -xJ -C "$TOOLS"
+  SIGN_UPDATE="$(find "$TOOLS" -type f -path '*/bin/sign_update' | head -n1)"
+fi
+if [[ -z "$SIGN_UPDATE" || ! -x "$SIGN_UPDATE" ]]; then
+  echo "Could not locate sign_update under $TOOLS" >&2
+  exit 1
+fi
+
+ed_sig_length="$(printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - "$ZIP_PATH" | tr -d '\n')"
+date="$(LC_ALL=C date +'%a, %d %b %Y %H:%M:%S %z')"
+url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${ZIP_NAME}"
+
+tmp="$(mktemp)"
+cat >"$tmp" <<EOF
+
+    <item>
+      <title>Version ${VERSION}</title>
+      <sparkle:version>${VERSION}</sparkle:version>
+      <pubDate>${date}</pubDate>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="${url}"
+        ${ed_sig_length}
+        type="application/octet-stream"/>
+    </item>
+EOF
+
+sed -i '' -e "/<\\/language>/r $tmp" appcast.xml
+rm -f "$tmp"

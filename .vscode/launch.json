@@ -1,0 +1,24 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lofi}",
+            "name": "Debug lofii",
+            "target": "lofii",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug lofii"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:lofi}",
+            "name": "Release lofii",
+            "target": "lofii",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release lofii"
+        }
+    ]
+}
