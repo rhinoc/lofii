@@ -750,6 +750,8 @@ final class AppModel: ObservableObject {
             cancelPlaybackRecovery()
             resetChillhopPlaybackState()
             currentTrack = nil
+            lastPlaybackWatchdogSample = nil
+            stalledPlaybackWatchdogTicks = 0
             streamStatus = "Connecting…"
             Task {
                 await loadLiveTrack(replacingCurrentItem: true)
@@ -1125,6 +1127,9 @@ final class AppModel: ObservableObject {
         category: "audio.flow"
     )
     private var streamRefreshTimer: Timer?
+    private var playbackWatchdogTimer: Timer?
+    private var lastPlaybackWatchdogSample: StreamingAudioEngine.PlaybackSample?
+    private var stalledPlaybackWatchdogTicks = 0
     private var chillhopQueue: [LiveTrack] = []
     private var chillhopTransitionTimer: Timer?
     private var chillhopTransitionFireDate: Date?
@@ -1141,7 +1146,7 @@ final class AppModel: ObservableObject {
             case .softResume:
                 return 1.2
             case .hardReload:
-                return 7
+                return 4
             }
         }
     }
@@ -1168,6 +1173,12 @@ final class AppModel: ObservableObject {
                     self.schedulePlaybackRecovery(.softResume)
                 }
             }
+        }
+        audioEngine.onPlaybackStallDetected = { [weak self] reason in
+            guard let self else { return }
+            self.logger.info("Playback stall signal reason=\(reason, privacy: .public)")
+            self.isBuffering = self.isPlaying
+            self.schedulePlaybackRecovery(.hardReload)
         }
 
         syncPlayback()
@@ -1290,6 +1301,7 @@ final class AppModel: ObservableObject {
             // .playing fires (or keep it on if we're really still buffering).
             isBuffering = true
             refreshLiveTrackLoop()
+            refreshPlaybackWatchdog()
             Task {
                 if currentTrack == nil {
                     await loadLiveTrack(replacingCurrentItem: true)
@@ -1304,6 +1316,7 @@ final class AppModel: ObservableObject {
             isBuffering = false
             streamStatus = "Paused"
             refreshLiveTrackLoop()
+            refreshPlaybackWatchdog()
         }
     }
 
@@ -1318,6 +1331,78 @@ final class AppModel: ObservableObject {
                 await self?.loadLiveTrack(replacingCurrentItem: false)
             }
         }
+    }
+
+    private func refreshPlaybackWatchdog() {
+        playbackWatchdogTimer?.invalidate()
+        playbackWatchdogTimer = nil
+        lastPlaybackWatchdogSample = nil
+        stalledPlaybackWatchdogTicks = 0
+
+        guard isPlaying else { return }
+        playbackWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.evaluatePlaybackWatchdog()
+            }
+        }
+    }
+
+    private func evaluatePlaybackWatchdog() {
+        guard isPlaying, let currentTrack else {
+            lastPlaybackWatchdogSample = nil
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        let sample = audioEngine.playbackSample()
+        defer { lastPlaybackWatchdogSample = sample }
+
+        guard sample.hasItem else {
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        if sample.itemFailed {
+            let error = sample.errorDescription ?? "nil"
+            logger.error("Playback watchdog saw failed item error=\(error, privacy: .public)")
+            isBuffering = true
+            schedulePlaybackRecovery(.hardReload)
+            return
+        }
+
+        if sample.isWaiting || sample.isBufferEmpty {
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        guard !currentTrack.isSynchronizedLiveStream, sample.isPlaying else {
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        guard let previous = lastPlaybackWatchdogSample,
+              previous.itemID == sample.itemID,
+              let previousTime = previous.currentTime,
+              let currentTime = sample.currentTime
+        else {
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        if currentTime - previousTime > 0.2 {
+            stalledPlaybackWatchdogTicks = 0
+            return
+        }
+
+        stalledPlaybackWatchdogTicks += 1
+        guard stalledPlaybackWatchdogTicks >= 3 else { return }
+
+        logger.info(
+            "Playback watchdog detected no progress title=\(currentTrack.title, privacy: .public) time=\(currentTime, format: .fixed(precision: 2)) rate=\(sample.rate, format: .fixed(precision: 2)) likely=\(sample.isLikelyToKeepUp)"
+        )
+        stalledPlaybackWatchdogTicks = 0
+        isBuffering = true
+        schedulePlaybackRecovery(.softResume)
     }
 
     private func loadLiveTrack(replacingCurrentItem: Bool) async {
@@ -1352,7 +1437,7 @@ final class AppModel: ObservableObject {
                 streamStatus = "Stream unavailable"
             }
         case let .directStream(trackID, url):
-            resetChillhopPlaybackState()
+            resetChillhopPlaybackState(clearPreparedTrack: false)
             let streamTrack = LiveTrack.directStream(
                 id: trackID,
                 title: currentPreset.radio.displayName,
@@ -1370,7 +1455,7 @@ final class AppModel: ObservableObject {
                 streamStatus = "Ready · \(currentPreset.radio.displayName)"
             }
         case let .radioCo(trackID, stationID):
-            resetChillhopPlaybackState()
+            resetChillhopPlaybackState(clearPreparedTrack: false)
             do {
                 let snapshot = try await radioCoService.fetchSnapshot(
                     stationID: stationID,
@@ -1389,6 +1474,7 @@ final class AppModel: ObservableObject {
                     if replacingCurrentItem || trackChanged {
                         playCurrentTrack(replacingCurrentItem: true)
                     } else {
+                        prepareLiveBackupIfNeeded(for: streamTrack, reason: "refresh radio backup")
                         streamStatus = "Live stream · \(streamTrack.title)"
                     }
                 } else {
@@ -1420,6 +1506,7 @@ final class AppModel: ObservableObject {
             shouldSeekToElapsed: shouldBootstrapChillhopPosition,
             reason: reason
         )
+        prepareLiveBackupIfNeeded(for: currentTrack, reason: "play current track")
         if currentTrack.isSynchronizedLiveStream {
             if replacingCurrentItem {
                 scheduleChillhopTransition(for: currentTrack, elapsed: elapsed)
@@ -1458,6 +1545,12 @@ final class AppModel: ObservableObject {
         }
 
         audioEngine.prepareNext(track: nextTrack, reason: "prepare upcoming chillhop")
+    }
+
+    private func prepareLiveBackupIfNeeded(for track: LiveTrack, reason: String) {
+        guard currentPreset.radio.source.usesLiveBackup else { return }
+        guard isPlaying, !track.isSynchronizedLiveStream else { return }
+        audioEngine.prepareLiveBackup(track: track, reason: reason)
     }
 
     private func scheduleChillhopTransition(for track: LiveTrack, elapsed: TimeInterval) {
@@ -1556,13 +1649,15 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func resetChillhopPlaybackState() {
+    private func resetChillhopPlaybackState(clearPreparedTrack: Bool = true) {
         chillhopQueue.removeAll()
         chillhopTransitionRemaining = nil
         chillhopTransitionFireDate = nil
         chillhopTransitionTimer?.invalidate()
         chillhopTransitionTimer = nil
-        audioEngine.clearPreparedTrack(reason: "reset chillhop playback state")
+        if clearPreparedTrack {
+            audioEngine.clearPreparedTrack(reason: "reset chillhop playback state")
+        }
     }
 
     private func schedulePlaybackRecovery(_ step: PlaybackRecoveryStep) {
@@ -1605,8 +1700,24 @@ final class AppModel: ObservableObject {
                 await performPlaybackRecovery(.hardReload)
             }
         case .hardReload:
+            if promoteLiveBackupIfPossible(for: currentTrack) {
+                return
+            }
             await loadLiveTrack(replacingCurrentItem: true)
         }
+    }
+
+    private func promoteLiveBackupIfPossible(for track: LiveTrack) -> Bool {
+        guard currentPreset.radio.source.usesLiveBackup else { return false }
+        guard !track.isSynchronizedLiveStream else { return false }
+        guard audioEngine.promotePreparedLiveBackup(reason: "playback recovery hard reload") else {
+            return false
+        }
+
+        isBuffering = false
+        streamStatus = "Live stream · \(track.title)"
+        prepareLiveBackupIfNeeded(for: track, reason: "refresh live backup after promotion")
+        return true
     }
 
     private func reconnectingStatus(for track: LiveTrack) -> String {

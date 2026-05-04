@@ -24,6 +24,9 @@ final class StreamingAudioEngine {
     private var currentTrackURL: URL?
     private var preparedTrackURL: URL?
     private var statusObservations: [NSKeyValueObservation] = []
+    private var activeItemObservations: [NSKeyValueObservation] = []
+    private var activeItemNotificationTokens: [NSObjectProtocol] = []
+    private var retryGeneration = 0
     private var fadeTimer: Timer?
     private var volume: Float = 1.0
     private let logger = Logger(
@@ -35,11 +38,26 @@ final class StreamingAudioEngine {
     /// stays purely "what should be happening" — the consumer (`AppModel`)
     /// owns the @Published mirror that drives SwiftUI.
     var onPlaybackStateChange: ((PlaybackState) -> Void)?
+    var onPlaybackStallDetected: ((String) -> Void)?
 
     enum PlaybackState: Equatable {
         case stopped
         case buffering
         case playing
+    }
+
+    struct PlaybackSample: Equatable {
+        let itemID: ObjectIdentifier?
+        let currentTime: TimeInterval?
+        let rate: Float
+        let isWaiting: Bool
+        let isPlaying: Bool
+        let isBufferEmpty: Bool
+        let isLikelyToKeepUp: Bool
+        let itemFailed: Bool
+        let errorDescription: String?
+
+        var hasItem: Bool { itemID != nil }
     }
 
     init() {
@@ -87,6 +105,7 @@ final class StreamingAudioEngine {
             let item = makePlayerItem(url: track.streamURL)
             player.replaceCurrentItem(with: item)
             currentTrackURL = track.streamURL
+            observeActiveItem(item)
         }
 
         if shouldSeekToElapsed {
@@ -98,6 +117,7 @@ final class StreamingAudioEngine {
         logger.info(
             "Play active deck reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) replacing=\(replacingCurrentItem) seekToElapsed=\(shouldSeekToElapsed) elapsed=\(elapsed, format: .fixed(precision: 2))"
         )
+        retryGeneration &+= 1
         player.play()
         emitPlaybackState()
     }
@@ -106,6 +126,7 @@ final class StreamingAudioEngine {
         logger.info(
             "Stop playback reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
         )
+        retryGeneration &+= 1
         activePlayer.pause()
         inactivePlayer.pause()
         emitPlaybackState()
@@ -124,14 +145,28 @@ final class StreamingAudioEngine {
         }
 
         cancelFade()
-        inactivePlayer.pause()
         inactivePlayer.volume = 0
         activePlayer.volume = volume
+        let item = activePlayer.currentItem
+        retryGeneration &+= 1
+        let generation = retryGeneration
         logger.info(
             "Retry current item reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
         )
-        activePlayer.play()
+        activePlayer.pause()
         emitPlaybackState()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self, weak item] in
+            Task { @MainActor [weak self, weak item] in
+                guard let self,
+                      self.retryGeneration == generation,
+                      let item,
+                      self.activePlayer.currentItem === item
+                else { return }
+                self.activePlayer.volume = self.volume
+                self.activePlayer.play()
+                self.emitPlaybackState()
+            }
+        }
         return true
     }
 
@@ -179,6 +214,27 @@ final class StreamingAudioEngine {
         // without the explicit preroll.
     }
 
+    func prepareLiveBackup(track: LiveTrack, reason: String) {
+        guard preparedTrackURL != track.streamURL || inactivePlayer.currentItem == nil else {
+            logger.debug(
+                "Live backup skipped reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) because URL already prepared"
+            )
+            return
+        }
+
+        let player = inactivePlayer
+        player.pause()
+        let item = makePlayerItem(url: track.streamURL)
+        item.preferredForwardBufferDuration = 18
+        player.replaceCurrentItem(with: item)
+        player.volume = 0
+        preparedTrackURL = track.streamURL
+        logger.info(
+            "Prepared live backup reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) url=\(track.streamURL.absoluteString, privacy: .public)"
+        )
+        player.play()
+    }
+
     func clearPreparedTrack(reason: String) {
         logger.info(
             "Clear prepared track reason=\(reason, privacy: .public) preparedURL=\(self.preparedTrackURL?.absoluteString ?? "nil", privacy: .public)"
@@ -220,6 +276,8 @@ final class StreamingAudioEngine {
             currentTrackURL = preparedTrackURL
             preparedTrackURL = nil
             activePlayer.volume = volume
+            retryGeneration &+= 1
+            observeActiveItem(activePlayer.currentItem)
             logger.info(
                 "Crossfade completed immediately reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
             )
@@ -251,6 +309,8 @@ final class StreamingAudioEngine {
                 self.currentTrackURL = self.preparedTrackURL
                 self.preparedTrackURL = nil
                 self.activePlayer.volume = self.volume
+                self.retryGeneration &+= 1
+                self.observeActiveItem(self.activePlayer.currentItem)
                 self.logger.info(
                     "Crossfade completed reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
                 )
@@ -259,6 +319,57 @@ final class StreamingAudioEngine {
         }
         emitPlaybackState()
         return true
+    }
+
+    @discardableResult
+    func promotePreparedLiveBackup(reason: String) -> Bool {
+        guard preparedTrackURL != nil,
+              let item = inactivePlayer.currentItem,
+              item.status == .readyToPlay || inactivePlayer.timeControlStatus == .playing
+        else {
+            logger.info(
+                "Live backup promote skipped reason=\(reason, privacy: .public) preparedURL=\(self.preparedTrackURL?.absoluteString ?? "nil", privacy: .public)"
+            )
+            return false
+        }
+
+        cancelFade()
+        let outgoingPlayer = activePlayer
+        let incomingDeck = activeDeck.other
+        let incomingPlayer = inactivePlayer
+        outgoingPlayer.pause()
+        outgoingPlayer.replaceCurrentItem(with: nil)
+        outgoingPlayer.volume = 0
+        activeDeck = incomingDeck
+        currentTrackURL = preparedTrackURL
+        preparedTrackURL = nil
+        activePlayer.volume = volume
+        retryGeneration &+= 1
+        observeActiveItem(activePlayer.currentItem)
+        logger.info(
+            "Promoted live backup reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
+        )
+        incomingPlayer.play()
+        emitPlaybackState()
+        return true
+    }
+
+    func playbackSample() -> PlaybackSample {
+        let player = activePlayer
+        let item = player.currentItem
+        let seconds = player.currentTime().seconds
+        let currentTime = seconds.isFinite ? seconds : nil
+        return PlaybackSample(
+            itemID: item.map { ObjectIdentifier($0) },
+            currentTime: currentTime,
+            rate: player.rate,
+            isWaiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
+            isPlaying: player.timeControlStatus == .playing || player.rate > 0,
+            isBufferEmpty: item?.isPlaybackBufferEmpty ?? false,
+            isLikelyToKeepUp: item?.isPlaybackLikelyToKeepUp ?? false,
+            itemFailed: item?.status == .failed,
+            errorDescription: item?.error?.localizedDescription
+        )
     }
 
     private var activePlayer: AVPlayer {
@@ -278,8 +389,80 @@ final class StreamingAudioEngine {
 
     private func makePlayerItem(url: URL) -> AVPlayerItem {
         let item = AVPlayerItem(url: url)
-        item.preferredForwardBufferDuration = 6
+        item.preferredForwardBufferDuration = 12
         return item
+    }
+
+    private func observeActiveItem(_ item: AVPlayerItem?) {
+        activeItemObservations.removeAll()
+        activeItemNotificationTokens.forEach { NotificationCenter.default.removeObserver($0) }
+        activeItemNotificationTokens.removeAll()
+
+        guard let item else { return }
+
+        activeItemObservations = [
+            item.observe(\.status, options: [.new]) { [weak self] observedItem, _ in
+                DispatchQueue.main.async { [weak self, weak observedItem] in
+                    guard let observedItem else { return }
+                    self?.handleActiveItemSignal(item: observedItem, reason: "item status changed")
+                }
+            },
+            item.observe(\.isPlaybackBufferEmpty, options: [.new]) { [weak self] observedItem, _ in
+                DispatchQueue.main.async { [weak self, weak observedItem] in
+                    guard let observedItem else { return }
+                    self?.handleActiveItemSignal(item: observedItem, reason: "buffer empty changed")
+                }
+            },
+            item.observe(\.isPlaybackLikelyToKeepUp, options: [.new]) { [weak self] observedItem, _ in
+                DispatchQueue.main.async { [weak self, weak observedItem] in
+                    guard let observedItem else { return }
+                    self?.handleActiveItemSignal(item: observedItem, reason: "likely to keep up changed")
+                }
+            },
+        ]
+
+        let stalled = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleActiveItemSignal(item: item, reason: "playback stalled notification")
+            }
+        }
+        let failed = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.handleActiveItemSignal(item: item, reason: "failed to play to end notification")
+            }
+        }
+        activeItemNotificationTokens = [stalled, failed]
+    }
+
+    private func handleActiveItemSignal(item: AVPlayerItem, reason: String) {
+        guard activePlayer.currentItem === item else { return }
+
+        if item.status == .failed {
+            let error = item.error?.localizedDescription ?? "nil"
+            logger.error(
+                "Active item failed reason=\(reason, privacy: .public) error=\(error, privacy: .public)"
+            )
+            onPlaybackStallDetected?("item failed: \(error)")
+            emitPlaybackState()
+            return
+        }
+
+        if item.isPlaybackBufferEmpty {
+            logger.info("Active item buffer empty reason=\(reason, privacy: .public)")
+            onPlaybackStallDetected?("buffer empty")
+            emitPlaybackState()
+            return
+        }
+
+        emitPlaybackState()
     }
 
     private func cancelFade() {

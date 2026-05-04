@@ -127,6 +127,13 @@ enum RadioSource: Equatable {
         return false
     }
 
+    var usesLiveBackup: Bool {
+        if case .radioCo = self {
+            return true
+        }
+        return false
+    }
+
     var stableID: String {
         switch self {
         case let .chillhop(stationID):

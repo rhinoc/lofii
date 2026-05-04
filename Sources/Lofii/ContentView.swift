@@ -1797,8 +1797,9 @@ private struct SettingsOverlay: View {
 
     var body: some View {
         GeometryReader { geo in
-            let panelWidth = min(max(geo.size.width - 24, 188), compact ? 430 : 560)
-            let panelHeight = min(max(geo.size.height - 70, 190), compact ? 360 : 500)
+            let edge = compact ? CGFloat(10) : CGFloat(14)
+            let panelWidth = max(geo.size.width - edge * 2, 188)
+            let panelHeight = max(geo.size.height - edge * 2, 190)
 
             ZStack(alignment: .top) {
                 Color.black.opacity(0.80)
@@ -1819,12 +1820,13 @@ private struct SettingsOverlay: View {
                         .padding(.horizontal, compact ? 10 : 12)
                         .padding(.vertical, 10)
                     }
+                    .frame(maxHeight: .infinity)
                 }
-                .frame(width: panelWidth)
+                .frame(width: panelWidth, alignment: .top)
                 .frame(maxHeight: panelHeight, alignment: .top)
                 .contentShape(Rectangle())
                 .onTapGesture {}
-                .padding(.top, compact ? 10 : 14)
+                .padding(edge)
             }
             .frame(width: geo.size.width, height: geo.size.height)
             .onAppear {

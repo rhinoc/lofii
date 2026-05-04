@@ -63,3 +63,15 @@ If all three values are **unset**, `code_sign.sh` skips the import and `sign_bui
 
 - With an **Apple Development** identity: similar to liltr's default Xcode flow, suitable for development and internal testing; other machines may still require an "Open" confirmation.
 - With a **Developer ID Application** identity: the script adds `--options runtime --timestamp`, ready for later `notarytool` notarization. The notarization step still needs to be wired into CI or run locally; the liltr scripts also do not currently perform notarization.
+
+## 7. Gatekeeper, quarantine, and downloads without notarization
+
+GitHub (and other browsers) mark downloaded archives with the `com.apple.quarantine` extended attribute. Without **Developer ID** signing plus **Apple notarization**, end users often see stricter Gatekeeper behavior than for Mac App Store or fully notarized apps.
+
+After unzipping `lofii-<version>-macos.zip`, users can clear quarantine on `lofii.app`:
+
+```bash
+xattr -dr com.apple.quarantine /path/to/lofii.app
+```
+
+Or use **Control-click → Open** once on the app (macOS records a user-approved open). This is normal for ad-hoc or self-signed builds when the project does not ship a notarized Developer ID build. See also **Install from GitHub Releases** in `README.md`.

@@ -59,6 +59,20 @@ jobs:
           asset_name: lofii-${{ steps.ver.outputs.version }}-macos.zip
           tag: v${{ steps.ver.outputs.version }}
           overwrite: true
+          body: |
+            ## macOS install note (Gatekeeper / quarantine)
+
+            The zip contains `lofii.app`. Browser downloads are quarantined by macOS (`com.apple.quarantine`). Builds that are **not** Developer ID-signed and **notarized** may show a security warning on first open.
+
+            After unzipping, remove quarantine (adjust the path to where you unzipped the app):
+
+            ```bash
+            xattr -dr com.apple.quarantine /path/to/lofii.app
+            ```
+
+            Or **Control-click (right-click) the app → Open** once and confirm.
+
+            More detail: [README — Install from GitHub Releases](https://github.com/${{ github.repository }}/blob/main/README.md#install-from-github-releases) · [SPARKLE.md (section 7)](https://github.com/${{ github.repository }}/blob/main/SPARKLE.md#7-gatekeeper-quarantine-and-downloads-without-notarization)
 
       - name: Commit version bump
         run: scripts/commit_release.sh
