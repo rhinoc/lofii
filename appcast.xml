@@ -5,6 +5,17 @@
     <language>en</language>
 
     <item>
+      <title>Version 0.0.8</title>
+      <sparkle:version>0.0.8</sparkle:version>
+      <pubDate>Tue, 05 May 2026 03:38:23 +0000</pubDate>
+      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <enclosure
+        url="https://github.com/rhinoc/lofii/releases/download/v0.0.8/lofii-0.0.8-macos.zip"
+        sparkle:edSignature="ZfAtOw89rcX3guyofuGMW5cqjfJJi3U8aryN1hFcA93bSt05jNEpV/f/C916Hd0uQuM9QHD455uv4YkDGblxDA==" length="15282873"
+        type="application/octet-stream"/>
+    </item>
+
+    <item>
       <title>Version 0.0.7</title>
       <sparkle:version>0.0.7</sparkle:version>
       <pubDate>Mon, 04 May 2026 19:16:18 +0000</pubDate>
