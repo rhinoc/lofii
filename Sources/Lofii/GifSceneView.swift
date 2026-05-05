@@ -206,6 +206,13 @@ struct GifSceneView: View {
         if let diskCached,
            localURL == diskCached,
            lastSettledAssetId == nil {
+            await waitForAnimatedGifFirstFrame(url: diskCached)
+            guard !Task.isCancelled else {
+                darkFieldOpacity = 0
+                transitionSnowOpacity = 1
+                transitionSnowURL = nil
+                return
+            }
             lastSettledAssetId = asset.id
             darkFieldOpacity = 0
             transitionSnowOpacity = 1
@@ -801,7 +808,7 @@ final class GifPlayerLayer: CALayer, @unchecked Sendable {
             // delay (typically 100 ms for lofi.cafe content).
             let delay = max(frameDelay, 0.016)
             let deferredWeak = WeakObjectBox(layer)
-            let queue = self.decodeQueue
+            let queue = layer.decodeQueue
             queue.asyncAfter(deadline: .now() + delay) {
                 guard let layer = deferredWeak.value, layer.isActive, layer.generation == myGen else { return }
                 layer.scheduleNextTick(

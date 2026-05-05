@@ -25,7 +25,7 @@ let package = Package(
             publicHeadersPath: ".",
             cxxSettings: [
                 .headerSearchPath("../../Core/include"),
-                .unsafeFlags(["-fno-objc-arc"]),
+                .unsafeFlags(["-fno-objc-arc", "-Wno-dynamic-class-memaccess"]),
             ]
         ),
         .target(

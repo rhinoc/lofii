@@ -753,12 +753,17 @@ final class AppModel: ObservableObject {
             lastPlaybackWatchdogSample = nil
             stalledPlaybackWatchdogTicks = 0
             streamStatus = "Connecting…"
+            refreshSystemMediaControls()
             Task {
                 await loadLiveTrack(replacingCurrentItem: true)
             }
         }
     }
-    @Published var currentVariant: SceneVariant = LofiiPreset.presets[0].defaultVariant
+    @Published var currentVariant: SceneVariant = LofiiPreset.presets[0].defaultVariant {
+        didSet {
+            refreshSystemMediaControls()
+        }
+    }
     @Published var visualMode: VisualMode = AppModel.loadVisualMode() {
         didSet {
             guard visualMode != oldValue else { return }
@@ -819,12 +824,15 @@ final class AppModel: ObservableObject {
 
     private func refreshVisualStageReady() {
         let tracksLoading = bongoOverlayVisible || visualMode == .gif
+        let nextReady: Bool
         if !tracksLoading {
-            visualStageReady = true
-            return
+            nextReady = true
+        } else {
+            let bongoSatisfied = !bongoOverlayVisible || bongoLive2DReady
+            nextReady = primaryVisualMediaReady && bongoSatisfied
         }
-        let bongoSatisfied = !bongoOverlayVisible || bongoLive2DReady
-        visualStageReady = primaryVisualMediaReady && bongoSatisfied
+        guard nextReady != visualStageReady else { return }
+        visualStageReady = nextReady
     }
 
     func markPrimaryVisualMediaReady() {
@@ -856,6 +864,7 @@ final class AppModel: ObservableObject {
     @Published var isPlaying = true {
         didSet {
             syncPlayback()
+            refreshSystemMediaControls()
         }
     }
     @Published var volume = 0.58 {
@@ -868,7 +877,11 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
         }
     }
-    @Published var currentTrack: LiveTrack?
+    @Published var currentTrack: LiveTrack? {
+        didSet {
+            refreshSystemMediaControls()
+        }
+    }
     @Published var streamStatus = "Connecting…"
     /// True while the user has asked us to play but the network/AVPlayer
     /// pipeline is still spinning up (initial connect or mid-stream rebuffer).
@@ -1120,6 +1133,7 @@ final class AppModel: ObservableObject {
     }
 
     private let audioEngine = StreamingAudioEngine()
+    private let systemMediaControls = SystemMediaControls()
     private let chillhopService = ChillhopService()
     private let radioCoService = RadioCoService()
     private let logger = Logger(
@@ -1155,6 +1169,26 @@ final class AppModel: ObservableObject {
         selectedIndex = Self.loadSelectedPresetIndex(from: presets)
         currentVariant = presets[selectedIndex].defaultVariant
         audioEngine.setVolume(volume)
+        systemMediaControls.install(
+            play: { [weak self] in
+                guard let self, !self.isPlaying else { return }
+                self.isPlaying = true
+            },
+            pause: { [weak self] in
+                guard let self, self.isPlaying else { return }
+                self.isPlaying = false
+            },
+            togglePlayPause: { [weak self] in
+                self?.togglePlayback()
+            },
+            nextTrack: { [weak self] in
+                self?.nextStation()
+            },
+            previousTrack: { [weak self] in
+                self?.previousStation()
+            }
+        )
+        refreshSystemMediaControls()
         // Mirror AVPlayer's transport status into a published flag. We only
         // surface "buffering" while the user actually wants playback —
         // otherwise a freshly-initialized .paused player would briefly read
@@ -1235,6 +1269,16 @@ final class AppModel: ObservableObject {
 
     var accent: Color {
         currentScene.palette.accent
+    }
+
+    private func refreshSystemMediaControls() {
+        systemMediaControls.update(
+            station: currentPreset.radio,
+            scene: currentScene,
+            variant: currentVariant,
+            track: currentTrack,
+            isPlaying: isPlaying
+        )
     }
 
     func togglePlayback() {

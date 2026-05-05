@@ -7,6 +7,9 @@ NS_ASSUME_NONNULL_BEGIN
 
 @property (nonatomic, readonly, getter=isCubismReady) BOOL cubismReady;
 
+- (instancetype)initWithFrame:(CGRect)frameRect device:(nullable id<MTLDevice>)device NS_UNAVAILABLE;
+- (instancetype)init NS_UNAVAILABLE;
+
 - (instancetype)initWithFrame:(NSRect)frameRect
                modelDirectory:(NSString *)modelDirectory
                     modelJSON:(NSString *)modelJSON NS_DESIGNATED_INITIALIZER;

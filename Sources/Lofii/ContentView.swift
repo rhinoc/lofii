@@ -1469,18 +1469,18 @@ private final class WaveformCoordinator: NSObject {
             }
 
         case .loading:
-            // Same flat segments as `.idle`; motion is only a traveling alpha wave
-            // along the strip (reads as “moving dashes”, no vertical amplitude).
+            // Keep the 16-bar retro waveform, but drive it with the referenced
+            // Lottie's five-step timing: tight left-to-right phase groups,
+            // separate height/offset curves, and a lower loading peak.
             ctx.setFillColor(cgColor)
-            let t = timestamp
             for i in 0..<count {
-                let phase = Double(i) * 0.58
-                let head = 0.5 + 0.5 * sin(t * 2.25 - phase)
-                let a = 0.32 + 0.68 * head
-                ctx.setAlpha(CGFloat(a))
-                let barH = scale
+                let state = loadingBarState(timestamp: timestamp, index: i, count: count)
+                ctx.setAlpha(0.58 + 0.42 * state.height)
+                let baseH = scale
+                let peakH = max(baseH, floor(CGFloat(h) * 0.48))
+                let barH = floor(baseH + (peakH - baseH) * state.height)
                 let x = leadingInset + CGFloat(i) * (barW + gap)
-                let y = (CGFloat(h) - barH) / 2
+                let y = (CGFloat(h) - barH) / 2 - state.offset * CGFloat(h) * 0.18
                 ctx.fill(CGRect(x: x, y: y, width: barW, height: barH))
             }
             ctx.setAlpha(1)
@@ -1508,6 +1508,80 @@ private final class WaveformCoordinator: NSObject {
             layer.contents = img
             CATransaction.commit()
         }
+    }
+
+    private func loadingBarState(
+        timestamp: CFTimeInterval,
+        index: Int,
+        count: Int
+    ) -> (height: CGFloat, offset: CGFloat) {
+        guard count > 1 else { return (0, 0) }
+
+        let frame = (timestamp * 30).truncatingRemainder(dividingBy: 60)
+        let phaseGroup = round(Double(index) / Double(count - 1) * 4)
+        let delay = phaseGroup * 4
+        let local = (frame - delay + 60).truncatingRemainder(dividingBy: 60)
+
+        let height: CGFloat = switch local {
+        case 0..<5:
+            lottieBezier(CGFloat(local / 5), x1: 0, y1: 0, x2: 0.68, y2: 0.19)
+        case 5..<12:
+            1
+        case 12..<20:
+            1 - lottieBezier(CGFloat((local - 12) / 8), x1: 0.55, y1: 0.06, x2: 1, y2: 1)
+        default:
+            0
+        }
+
+        let offset: CGFloat = switch local {
+        case 5..<12:
+            lottieBezier(CGFloat((local - 5) / 7), x1: 0.55, y1: 0.06, x2: 0.68, y2: 0.19)
+        case 12..<20:
+            1
+        case 20..<30:
+            1 - lottieBezier(CGFloat((local - 20) / 10), x1: 0.55, y1: 0.06, x2: 1, y2: 1)
+        default:
+            0
+        }
+
+        return (height, offset)
+    }
+
+    private func lottieBezier(
+        _ progress: CGFloat,
+        x1: CGFloat,
+        y1: CGFloat,
+        x2: CGFloat,
+        y2: CGFloat
+    ) -> CGFloat {
+        let x = min(1, max(0, progress))
+        var low: CGFloat = 0
+        var high: CGFloat = 1
+        var t = x
+        for _ in 0..<8 {
+            t = (low + high) / 2
+            if cubicBezier(t, 0, x1, x2, 1) < x {
+                low = t
+            } else {
+                high = t
+            }
+        }
+        return cubicBezier(t, 0, y1, y2, 1)
+    }
+
+    private func cubicBezier(
+        _ t: CGFloat,
+        _ p0: CGFloat,
+        _ p1: CGFloat,
+        _ p2: CGFloat,
+        _ p3: CGFloat
+    ) -> CGFloat {
+        let clamped = min(1, max(0, t))
+        let inverse = 1 - clamped
+        return inverse * inverse * inverse * p0
+            + 3 * inverse * inverse * clamped * p1
+            + 3 * inverse * clamped * clamped * p2
+            + clamped * clamped * clamped * p3
     }
 
     func tearDown() {

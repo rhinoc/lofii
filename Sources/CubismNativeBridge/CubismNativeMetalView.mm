@@ -742,6 +742,12 @@ private:
     CFTimeInterval _lastFrameTime;
 }
 
+- (instancetype)initWithFrame:(CGRect)frameRect device:(nullable id<MTLDevice>)device
+{
+    NSAssert(NO, @"Use -initWithFrame:modelDirectory:modelJSON: instead");
+    return nil;
+}
+
 - (instancetype)initWithFrame:(NSRect)frameRect
                modelDirectory:(NSString *)modelDirectory
                     modelJSON:(NSString *)modelJSON

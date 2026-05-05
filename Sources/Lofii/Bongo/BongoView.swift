@@ -75,8 +75,40 @@ private struct BongoUnifiedStage: View {
         }
     }
 
+    /// Includes **pack** and **reload token** so switching the Live2D model
+    /// always changes the `.task(id:)` value. Previously only scene/GIF id was
+    /// used — the id stayed the same across pack changes, so the background
+    /// loader could skip (or leave `transitionSnowURL` / gate state stale)
+    /// while `bongoCatPack` didSet already put Live2D back in “pending”.
     private var loadSessionKey: String {
-        "\(model.visualMode.rawValue)-\(backgroundTaskKey)"
+        "\(model.visualMode.rawValue)-\(backgroundTaskKey)-\(pack.cacheTag)-\(model.bongoPackReloadToken)"
+    }
+
+    /// True when this `loadSessionKey` has finished loading (no transition snow,
+    /// Metal source is allowed). Used so a redundant `.task` delivery for the
+    /// same id does not call `resetVisualStageLoadingGate` / nil out
+    /// `settledLoadSessionKey` — that was re-tearing Metal + Cubism and could
+    /// leave snow visible while `markPrimaryVisualMediaReady` fired twice.
+    private var isBongoBackgroundFullyReadyForCurrentLoadSession: Bool {
+        guard settledLoadSessionKey == loadSessionKey else { return false }
+        guard transitionSnowURL == nil, loadError == nil else { return false }
+        guard darkFieldOpacity == 0 else { return false }
+        switch model.visualMode {
+        case .cinematic:
+            let asset = model.currentScene
+            let variant = model.currentVariant
+            let cacheKey = "\(asset.id)/\(variant.rawValue)"
+            guard lastSettledVideoKey == cacheKey else { return false }
+            guard let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant),
+                  localURL == cached else { return false }
+            return true
+        case .gif:
+            guard let asset = model.currentGif else { return false }
+            guard lastSettledAssetId == asset.id else { return false }
+            guard let disk = GifCache.cachedURLIfAvailable(for: asset),
+                  localURL == disk else { return false }
+            return true
+        }
     }
 
     private var unifiedMetalSource: StageMetalSource? {
@@ -142,7 +174,8 @@ private struct BongoUnifiedStage: View {
                         shatteredGlassHighlight: model.shatteredGlass.resolvedHighlight,
                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
                         maxFittedStageHeightFraction: model.bongoStageScaleTier.maxFittedStageHeightFractionOfContainer,
-                        layoutContainerSize: geo.size
+                        layoutContainerSize: geo.size,
+                        onLive2DWorkspaceReady: { model.markBongoLive2DReady() }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
                 }
@@ -177,6 +210,9 @@ private struct BongoUnifiedStage: View {
 
         }
         .task(id: loadSessionKey) {
+            if isBongoBackgroundFullyReadyForCurrentLoadSession {
+                return
+            }
             model.resetVisualStageLoadingGate(updateBongoLayer: false)
             settledLoadSessionKey = nil
             switch model.visualMode {
@@ -187,9 +223,9 @@ private struct BongoUnifiedStage: View {
             }
         }
         .onAppear {
-            coordinator.onModelReadyWorkspace = { [weak model] in
-                model?.markBongoLive2DReady()
-            }
+            // Live2D “workspace ready” is driven from `BongoUnifiedMetalView.onLive2DWorkspaceReady`
+            // (same pattern as `StageMetalPlayerView.onFirstFrameReady`). Keep this only for the rare
+            // case Metal attached before the first `update` tick while the model is already loaded.
             if coordinator.bongoModelIsReady {
                 model.markBongoLive2DReady()
             }
@@ -230,7 +266,8 @@ private struct BongoUnifiedStage: View {
 
         if let diskCached,
            localURL == diskCached,
-           lastSettledAssetId == asset.id {
+           lastSettledAssetId == asset.id,
+           transitionSnowURL == nil {
             darkFieldOpacity = 0
             transitionSnowOpacity = 1
             transitionSnowURL = nil
@@ -295,7 +332,8 @@ private struct BongoUnifiedStage: View {
 
         if let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant),
            localURL == cached,
-           lastSettledVideoKey == cacheKey {
+           lastSettledVideoKey == cacheKey,
+           transitionSnowURL == nil {
             darkFieldOpacity = 0
             transitionSnowOpacity = 1
             transitionSnowURL = nil
@@ -312,7 +350,6 @@ private struct BongoUnifiedStage: View {
         TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
 
         let keyChanged = lastSettledVideoKey != nil && lastSettledVideoKey != cacheKey
-        lastSettledVideoKey = cacheKey
 
         if let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant) {
             if localURL != cached {
@@ -382,6 +419,7 @@ private struct BongoUnifiedStage: View {
             clearSnowURL: { transitionSnowURL = nil },
             resetSnowOpacity: { transitionSnowOpacity = 1 }
         )
+        lastSettledVideoKey = cacheKey
     }
 }
 
@@ -489,6 +527,8 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     let maxFittedStageHeightFraction: CGFloat
     /// SwiftUI-proposed size for the stage (points). Prefer over `NSView.bounds` so layout matches `GeometryReader` during resize.
     let layoutContainerSize: CGSize
+    /// Mirrors `StageMetalPlayerView.onFirstFrameReady`: supplied by SwiftUI so `attach` never races `onAppear`.
+    let onLive2DWorkspaceReady: () -> Void
 
     func makeCoordinator() -> BongoUnifiedMetalRenderer {
         BongoUnifiedMetalRenderer(bongoCoordinator: bongoCoordinator)
@@ -496,8 +536,11 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MTKView {
         let view = BongoStageMTKView()
-        context.coordinator.attach(to: view)
+        // Install render state (including `onLive2DWorkspaceReady`) before `attach`, which calls
+        // `ensureModelReadyFromNative(workspaceReady:)` — same ordering contract as passing
+        // callbacks through `NSViewRepresentable` values rather than mutating a coordinator later.
         update(renderer: context.coordinator)
+        context.coordinator.attach(to: view)
         return view
     }
 
@@ -539,7 +582,8 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
             shatteredGlassHighlight: shatteredGlassHighlight,
             shatteredGlassFlipX: shatteredGlassFlipX,
             maxFittedStageHeightFraction: maxFittedStageHeightFraction,
-            layoutContainerSize: layoutContainerSize
+            layoutContainerSize: layoutContainerSize,
+            onLive2DWorkspaceReady: onLive2DWorkspaceReady
         )
     }
 }
@@ -585,6 +629,8 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private let bongoCoordinator: BongoCoordinator
+    /// Latest handler from SwiftUI (`BongoUnifiedMetalView.onLive2DWorkspaceReady`); set in `update` before `attach`.
+    private var onLive2DWorkspaceReady: () -> Void = {}
     private weak var view: MTKView?
     private var device: MTLDevice?
     private var commandQueue: MTLCommandQueue?
@@ -677,7 +723,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         CVMetalTextureCacheCreate(nil, nil, metalDevice, nil, &videoTextureCache)
         buildPipelines(device: metalDevice, pixelFormat: view.colorPixelFormat)
         _ = bongoCoordinator.ensureNativeRenderer(device: metalDevice)
-        bongoCoordinator.ensureModelReadyFromNative()
+        bongoCoordinator.ensureModelReadyFromNative(workspaceReady: onLive2DWorkspaceReady)
     }
 
     func update(
@@ -709,8 +755,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         shatteredGlassHighlight: Double,
         shatteredGlassFlipX: Double,
         maxFittedStageHeightFraction: CGFloat,
-        layoutContainerSize: CGSize
+        layoutContainerSize: CGSize,
+        onLive2DWorkspaceReady: @escaping () -> Void
     ) {
+        self.onLive2DWorkspaceReady = onLive2DWorkspaceReady
         let backgroundChanged = self.backgroundSource != background
         let playbackChanged = self.isPlaying != isPlaying
         let cappedFPS = StageMetalMTKRuntime.clampedPreferredFramesPerSecond(renderFramesPerSecond)
@@ -1842,8 +1890,6 @@ final class BongoCoordinator: ObservableObject {
     /// Rare random motions while the overlay is “live” (monitor running); long random delays between fires.
     private var randomIdleMotionTimer: Timer?
 
-    var onModelReadyWorkspace: (() -> Void)?
-
     var bongoModelIsReady: Bool { isNativeReady || isModelLoaded }
     var isNativeReady: Bool { nativeRenderer?.isCubismReady ?? false }
 
@@ -1917,10 +1963,21 @@ final class BongoCoordinator: ObservableObject {
         return nativeRenderer.tryStartRandomTapMotion()
     }
 
-    /// The native renderer explicitly marks the overlay ready on appear.
-    func ensureModelReadyFromNative() {
-        guard !isModelLoaded else { return }
-        handleModelReady()
+    /// Called from `BongoUnifiedMetalRenderer.attach` once the Metal device exists.
+    /// `workspaceReady` comes from SwiftUI (`BongoUnifiedMetalView.onLive2DWorkspaceReady`), same idea as
+    /// `StageMetalPlayerView.onFirstFrameReady` — never rely on a coordinator property assigned in `onAppear`.
+    ///
+    /// **Always** invokes `workspaceReady` even when `isModelLoaded` is already true: SwiftUI can tear down
+    /// and recreate the `MTKView` while this coordinator stays alive (`StateObject`), and `AppModel` may have
+    /// just called `markBongoLive2DPending()` for a pack swap — the gate must be lifted again on every attach.
+    func ensureModelReadyFromNative(workspaceReady: @escaping () -> Void) {
+        if !isModelLoaded {
+            isModelLoaded = true
+            if pendingPlay {
+                startMonitor()
+            }
+        }
+        workspaceReady()
     }
 
     func setPlaying(_ playing: Bool) {
@@ -1951,15 +2008,6 @@ final class BongoCoordinator: ObservableObject {
     }
 
     // MARK: Private
-
-    private func handleModelReady() {
-        guard !isModelLoaded else { return }
-        isModelLoaded = true
-        if pendingPlay {
-            startMonitor()
-        }
-        onModelReadyWorkspace?()
-    }
 
     private func startMonitor() {
         guard monitor == nil else { return }

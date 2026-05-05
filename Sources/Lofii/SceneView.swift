@@ -85,7 +85,10 @@ struct SceneView: View {
         // than the dim cinematic frames).
         let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant)
         _localURL = State(initialValue: cached)
-        _lastSeenKey = State(initialValue: "\(asset.id)/\(variant.rawValue)")
+        // `nil` on first launch so `loadVideoCoveringWithSnow` does not hit the
+        // fast-return while startup snow is still waiting for Metal/AV — that
+        // path matches `GifSceneView` / Bongo background loading.
+        _lastSeenKey = State(initialValue: nil)
         // No video on disk yet: show bundled snow immediately (no empty frame
         // before `.task` runs) instead of a spinner or bare gradient.
         _transitionStaticURL = State(
@@ -218,7 +221,7 @@ struct SceneView: View {
         }
         TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
 
-        let keyChanged = lastSeenKey != cacheKey
+        let keyChanged = lastSeenKey != nil && lastSeenKey != cacheKey
         lastSeenKey = cacheKey
 
         if let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant) {

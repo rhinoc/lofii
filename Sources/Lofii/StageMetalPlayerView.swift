@@ -302,14 +302,24 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
     func draw(in view: MTKView) {
-        guard
-            let drawable = view.currentDrawable,
-            let descriptor = view.currentRenderPassDescriptor,
-            let commandQueue,
-            let commandBuffer = commandQueue.makeCommandBuffer(),
-            let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor),
-            let pipelineState
-        else { return }
+        guard let drawable = view.currentDrawable else {
+            return
+        }
+        guard let descriptor = view.currentRenderPassDescriptor else {
+            return
+        }
+        guard let commandQueue else {
+            return
+        }
+        guard let commandBuffer = commandQueue.makeCommandBuffer() else {
+            return
+        }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return
+        }
+        guard let pipelineState else {
+            return
+        }
 
         let textureAndSize = currentTexture()
         notifyFirstFrameReadyIfNeeded(texture: textureAndSize.texture)
@@ -468,6 +478,10 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         currentGifSize = gifCache?.pixelSize ?? .zero
         gifTextureFrameCache.reset(url: url, frameCache: gifCache)
         uploadGifFrame(at: 0)
+        // `draw(in:)` may not run immediately (MTKView paused, pipeline not ready,
+        // or zero-size layout). `GifSceneView` waits on this callback to lift snow;
+        // signal as soon as the first GPU texture exists.
+        notifyFirstFrameReadyIfNeeded(texture: currentGifTexture)
     }
 
     private func applyPlaybackState() {
@@ -549,6 +563,9 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         currentVideoCVTexture = cvTexture
         currentVideoTexture = texture
         currentVideoSize = CGSize(width: width, height: height)
+        // Same idea as `configureGif`: `SceneView` startup snow waits on this
+        // callback; do not rely solely on `draw(in:)` committing first.
+        notifyFirstFrameReadyIfNeeded(texture: texture)
     }
 
     private func logVideoNoFrameIfNeeded(itemTime: CMTime) {

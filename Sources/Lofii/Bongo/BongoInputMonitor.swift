@@ -148,8 +148,14 @@ final class BongoInputMonitor {
         guard keyboardMonitor == nil else { return }
 
         let promptKey = "AXTrustedCheckOptionPrompt" as CFString
-        let options = [promptKey: true] as CFDictionary
-        let trusted = AXIsProcessTrustedWithOptions(options)
+        // Silent check first: `prompt: true` on every launch can surface system UI
+        // even when the app is already trusted on some macOS versions.
+        let silentOptions = [promptKey: false] as CFDictionary
+        var trusted = AXIsProcessTrustedWithOptions(silentOptions)
+        if !trusted {
+            let promptOptions = [promptKey: true] as CFDictionary
+            trusted = AXIsProcessTrustedWithOptions(promptOptions)
+        }
 
         if trusted {
             keyboardMonitor = NSEvent.addGlobalMonitorForEvents(
