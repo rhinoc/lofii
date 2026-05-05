@@ -211,7 +211,7 @@ final class SystemMediaControls: @unchecked Sendable {
     }
 
     private static func loadFallbackArtwork() -> MPMediaItemArtwork {
-        if let url = Bundle.module.url(forResource: "AppIcon", withExtension: "icns"),
+        if let url = LofiiResources.bundle.url(forResource: "AppIcon", withExtension: "icns"),
            let image = NSImage(contentsOf: url) {
             return makeArtwork(from: image)
         }
