@@ -38,7 +38,12 @@ struct LofiiApp: App {
                 // the (hidden) titlebar, leaving an empty transparent strip
                 // above the rounded card.
                 .ignoresSafeArea()
-                .background(WindowConfigurator(alwaysOnTop: model.alwaysOnTop))
+                .background(
+                    WindowConfigurator(
+                        alwaysOnTop: model.alwaysOnTop,
+                        contentCornerRadius: model.widgetWindowContentCornerRadius
+                    )
+                )
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 400, height: 300)
@@ -441,16 +446,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 private enum WidgetWindowAppearance {
-    private static let cornerRadius: CGFloat = 22
-
     @MainActor
-    static func apply(to window: NSWindow, isFullscreen: Bool) {
+    static func apply(to window: NSWindow, isFullscreen: Bool, contentCornerRadius: CGFloat? = nil) {
         stripSystemChrome(from: window)
         applyStandardButtonVisibility(to: window, isFullscreen: isFullscreen)
 
         guard let contentView = window.contentView else { return }
         contentView.wantsLayer = true
         guard let layer = contentView.layer else { return }
+
+        let resolvedRadius: CGFloat = {
+            if isFullscreen { return 0 }
+            if let r = contentCornerRadius, r > 0 { return r }
+            if let r = AppCommandState.model?.widgetWindowContentCornerRadius, r > 0 { return r }
+            return WidgetChromeMetrics.contentCornerRadius
+        }()
 
         if isFullscreen {
             layer.cornerRadius = 0
@@ -461,7 +471,7 @@ private enum WidgetWindowAppearance {
             return
         }
 
-        layer.cornerRadius = cornerRadius
+        layer.cornerRadius = resolvedRadius
         layer.cornerCurve = .continuous
         layer.masksToBounds = true
         layer.borderWidth = 1
@@ -542,6 +552,7 @@ private enum WidgetWindowAppearance {
 
 private struct WindowConfigurator: NSViewRepresentable {
     let alwaysOnTop: Bool
+    let contentCornerRadius: CGFloat
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -615,12 +626,12 @@ private struct WindowConfigurator: NSViewRepresentable {
 
         // AppKit's window shadow is rectangular and follows `contentView.frame`,
         // not our rounded contentView, so it drew a square shadow around our
-        // pill-shaped card. We let CoreAnimation paint a soft shadow on the
+        // rounded card. We let CoreAnimation paint a soft shadow on the
         // layer instead, which respects the cornerRadius.
         window.hasShadow = false
 
         window.level = isFullscreen ? .normal : (alwaysOnTop ? .floating : .normal)
-        WidgetWindowAppearance.apply(to: window, isFullscreen: isFullscreen)
+        WidgetWindowAppearance.apply(to: window, isFullscreen: isFullscreen, contentCornerRadius: contentCornerRadius)
         // `.fullScreenPrimary` lets us call `toggleFullScreen(_:)` from our
         // green traffic-light dot. `.fullScreenAuxiliary` (the previous
         // value) explicitly disallows that and would have made the button

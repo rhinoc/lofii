@@ -143,6 +143,9 @@ private struct BongoUnifiedStage: View {
                 let crtVignetteAlpha = model.crt.resolvedVignetteAlpha(
                     active: model.crt.enabled && model.crt.vignette
                 )
+                let bongoShatteredGlass = model.shatteredGlass.resolvedForDisplayPipeline(
+                    crtMasterEnabled: model.crt.enabled
+                )
                 GeometryReader { geo in
                     BongoUnifiedMetalView(
                         background: source,
@@ -169,9 +172,9 @@ private struct BongoUnifiedStage: View {
                         scanlinesEnabled: model.crt.enabled && model.crt.scanlines,
                         scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
                         scanlineDensity: model.crt.scanlineDensity.pitch,
-                        shatteredGlassOpacity: model.shatteredGlass.resolvedOpacity,
-                        shatteredGlassRefraction: model.shatteredGlass.resolvedRefraction,
-                        shatteredGlassHighlight: model.shatteredGlass.resolvedHighlight,
+                        shatteredGlassOpacity: bongoShatteredGlass.opacity,
+                        shatteredGlassRefraction: bongoShatteredGlass.refraction,
+                        shatteredGlassHighlight: bongoShatteredGlass.highlight,
                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
                         maxFittedStageHeightFraction: model.bongoStageScaleTier.maxFittedStageHeightFractionOfContainer,
                         layoutContainerSize: geo.size,
@@ -205,7 +208,7 @@ private struct BongoUnifiedStage: View {
                 }
                 .foregroundStyle(.white.opacity(0.8))
                 .padding(10)
-                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: WidgetChromeMetrics.contentCornerRadius))
             }
 
         }

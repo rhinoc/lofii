@@ -149,7 +149,7 @@ struct GifSceneView: View {
                 }
                 .foregroundStyle(.white.opacity(0.8))
                 .padding(10)
-                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 10))
+                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: WidgetChromeMetrics.contentCornerRadius))
             }
         }
         .task(id: asset.id) {

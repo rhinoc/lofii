@@ -185,6 +185,9 @@ struct WidgetRootView: View {
             // model, key overlays, and final post pass are processed together.
             let bongoVisible = model.bongoOverlayVisible
             let backgroundCRTEnabled = model.crt.enabled && !bongoVisible
+            let backgroundShatteredGlass = model.shatteredGlass.resolvedForDisplayPipeline(
+                crtMasterEnabled: backgroundCRTEnabled
+            )
             let backgroundCurvationActive = backgroundCRTEnabled && model.crt.curvation
             let backgroundVignetteActive = backgroundCRTEnabled && model.crt.vignette
             let backgroundCurvationUniforms = model.crt.resolvedCurvationUniforms(active: backgroundCurvationActive)
@@ -214,9 +217,9 @@ struct WidgetRootView: View {
                                         scanlinesEnabled: backgroundScanlinesEnabled,
                                         scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
                                         scanlineDensity: model.crt.scanlineDensity.pitch,
-                                        shatteredGlassOpacity: model.shatteredGlass.resolvedOpacity,
-                                        shatteredGlassRefraction: model.shatteredGlass.resolvedRefraction,
-                                        shatteredGlassHighlight: model.shatteredGlass.resolvedHighlight,
+                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
                                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX
                                     )
                                 } else {
@@ -249,9 +252,9 @@ struct WidgetRootView: View {
                                                 scanlinesEnabled: backgroundScanlinesEnabled,
                                                 scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
                                                 scanlineDensity: model.crt.scanlineDensity.pitch,
-                                                shatteredGlassOpacity: model.shatteredGlass.resolvedOpacity,
-                                                shatteredGlassRefraction: model.shatteredGlass.resolvedRefraction,
-                                                shatteredGlassHighlight: model.shatteredGlass.resolvedHighlight,
+                                                shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                                shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                                shatteredGlassHighlight: backgroundShatteredGlass.highlight,
                                                 shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
                                                 onAnimatedGifReady: {
                                                     model.markPrimaryVisualMediaReady()
@@ -275,9 +278,9 @@ struct WidgetRootView: View {
                                         scanlinesEnabled: backgroundScanlinesEnabled,
                                         scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
                                         scanlineDensity: model.crt.scanlineDensity.pitch,
-                                        shatteredGlassOpacity: model.shatteredGlass.resolvedOpacity,
-                                        shatteredGlassRefraction: model.shatteredGlass.resolvedRefraction,
-                                        shatteredGlassHighlight: model.shatteredGlass.resolvedHighlight,
+                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
                                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX
                                     )
                                 }
@@ -1918,8 +1921,6 @@ private struct SettingsOverlay: View {
             bongoSection
         case .crt:
             crtSection
-        case .glass:
-            shatteredGlassSection
         }
     }
 
@@ -2131,102 +2132,106 @@ private struct SettingsOverlay: View {
     }
 
     private var crtSection: some View {
-        SettingsSection {
-            SettingsToggleRow(
-                title: "Enabled",
-                isOn: crtBool(\.enabled),
-                accent: model.accent,
-                textSize: textSize
-            )
+        VStack(alignment: .leading, spacing: 14) {
+            SettingsSection {
+                SettingsToggleRow(
+                    title: "Enabled",
+                    isOn: crtBool(\.enabled),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsToggleRow(
-                title: "Curvation",
-                isOn: crtBool(\.curvation),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Curvation",
+                    isOn: crtBool(\.curvation),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Curvation Strength",
-                choices: CurvationStrength.allCases,
-                selection: crtChoice(\.curvationStrength),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Curvation Strength",
+                    choices: CurvationStrength.allCases,
+                    selection: crtChoice(\.curvationStrength),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsToggleRow(
-                title: "Vignette",
-                isOn: crtBool(\.vignette),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Vignette",
+                    isOn: crtBool(\.vignette),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Vignette Strength",
-                choices: VignetteStrength.allCases,
-                selection: crtChoice(\.vignetteStrength),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Vignette Strength",
+                    choices: VignetteStrength.allCases,
+                    selection: crtChoice(\.vignetteStrength),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsToggleRow(
-                title: "Chromatic Aberration",
-                isOn: crtBool(\.chromaticAberration),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Chromatic Aberration",
+                    isOn: crtBool(\.chromaticAberration),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Chromatic Strength",
-                choices: ChromaticAberrationStrength.allCases,
-                selection: crtChoice(\.chromaticAberrationStrength),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Chromatic Strength",
+                    choices: ChromaticAberrationStrength.allCases,
+                    selection: crtChoice(\.chromaticAberrationStrength),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsToggleRow(
-                title: "Scan Line",
-                isOn: crtBool(\.scanlines),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Scan Line",
+                    isOn: crtBool(\.scanlines),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Scan Strength",
-                choices: ScanlineOpacity.allCases,
-                selection: crtChoice(\.scanlineOpacity),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Scan Strength",
+                    choices: ScanlineOpacity.allCases,
+                    selection: crtChoice(\.scanlineOpacity),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Scan Density",
-                choices: ScanlineDensity.allCases,
-                selection: crtChoice(\.scanlineDensity),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Scan Density",
+                    choices: ScanlineDensity.allCases,
+                    selection: crtChoice(\.scanlineDensity),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsToggleRow(
-                title: "Motion Blur",
-                isOn: crtBool(\.motionBlur),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Motion Blur",
+                    isOn: crtBool(\.motionBlur),
+                    accent: model.accent,
+                    textSize: textSize
+                )
 
-            SettingsChoiceRow(
-                title: "Blur Strength",
-                choices: MotionBlurStrength.allCases,
-                selection: crtChoice(\.motionBlurStrength),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Blur Strength",
+                    choices: MotionBlurStrength.allCases,
+                    selection: crtChoice(\.motionBlurStrength),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize
+                )
+            }
+
+            shatteredGlassSection
         }
     }
 
@@ -2339,7 +2344,6 @@ private enum SettingsOverlayPage: String, CaseIterable, Identifiable {
     case readout
     case bongo
     case crt
-    case glass
 
     var id: String { rawValue }
 
@@ -2348,7 +2352,6 @@ private enum SettingsOverlayPage: String, CaseIterable, Identifiable {
         case .readout: return "READOUT"
         case .bongo: return "BONGO"
         case .crt: return "CRT"
-        case .glass: return "GLASS"
         }
     }
 }
@@ -3331,10 +3334,8 @@ enum SettingsContextMenu {
         motionBlurItem.submenu = motionBlurMenu
         crtMenu.addItem(motionBlurItem)
 
-        crtItem.submenu = crtMenu
-        menu.addItem(crtItem)
+        crtMenu.addItem(.separator())
 
-        // --- Shattered Glass submenu ---
         let glassItem = NSMenuItem(title: "Glass", action: nil, keyEquivalent: "")
         let glassMenu = NSMenu()
         let glassEnabledItem = NSMenuItem(
@@ -3380,7 +3381,10 @@ enum SettingsContextMenu {
         glassMenu.addItem(glassPlacementItem)
 
         glassItem.submenu = glassMenu
-        menu.addItem(glassItem)
+        crtMenu.addItem(glassItem)
+
+        crtItem.submenu = crtMenu
+        menu.addItem(crtItem)
 
         // Update the singleton's reference to the live model so the
         // selectors (which receive the NSMenuItem, not the model)

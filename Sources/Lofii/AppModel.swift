@@ -360,26 +360,6 @@ struct ShatteredGlassSettings: Codable, Equatable, Sendable {
         self.strength = strength
         self.placement = placement
     }
-
-    private enum CodingKeys: String, CodingKey {
-        case enabled
-        case strength
-        case placement
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? false
-        strength = try container.decodeIfPresent(ShatteredGlassStrength.self, forKey: .strength) ?? .balanced
-        placement = try container.decodeIfPresent(ShatteredGlassPlacement.self, forKey: .placement) ?? .left
-    }
-
-    func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(enabled, forKey: .enabled)
-        try container.encode(strength, forKey: .strength)
-        try container.encode(placement, forKey: .placement)
-    }
 }
 
 extension ShatteredGlassSettings {
@@ -397,6 +377,12 @@ extension ShatteredGlassSettings {
 
     var resolvedFlipX: Double {
         placement.resolvedFlipX
+    }
+
+    /// When the CRT master switch is off, glass must not draw (it is grouped under CRT in the UI).
+    func resolvedForDisplayPipeline(crtMasterEnabled: Bool) -> (opacity: Double, refraction: Double, highlight: Double) {
+        guard crtMasterEnabled else { return (0, 0, 0) }
+        return (resolvedOpacity, resolvedRefraction, resolvedHighlight)
     }
 }
 
@@ -877,6 +863,9 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(alwaysOnTop, forKey: Self.alwaysOnTopKey)
         }
     }
+
+    var widgetWindowContentCornerRadius: CGFloat { WidgetChromeMetrics.contentCornerRadius }
+
     @Published var currentTrack: LiveTrack? {
         didSet {
             refreshSystemMediaControls()
@@ -1024,30 +1013,32 @@ final class AppModel: ObservableObject {
         return value
     }
 
+    private static func loadDecodedJSON<T: Codable>(
+        _: T.Type,
+        key: String,
+        default defaultValue: T
+    ) -> T {
+        guard let data = UserDefaults.standard.data(forKey: key) else {
+            return defaultValue
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            UserDefaults.standard.removeObject(forKey: key)
+            return defaultValue
+        }
+    }
+
     private static func loadCRTSettings() -> CRTSettings {
-        guard let data = UserDefaults.standard.data(forKey: crtSettingsKey),
-              let value = try? JSONDecoder().decode(CRTSettings.self, from: data)
-        else { return CRTSettings() }
-        return value
+        loadDecodedJSON(CRTSettings.self, key: crtSettingsKey, default: CRTSettings())
     }
 
     private static func loadShatteredGlassSettings() -> ShatteredGlassSettings {
-        guard let data = UserDefaults.standard.data(forKey: shatteredGlassSettingsKey),
-              let value = try? JSONDecoder().decode(ShatteredGlassSettings.self, from: data)
-        else { return ShatteredGlassSettings() }
-        return value
+        loadDecodedJSON(ShatteredGlassSettings.self, key: shatteredGlassSettingsKey, default: ShatteredGlassSettings())
     }
 
     private static func loadReadoutFontSettings() -> ReadoutFontSettings {
-        let decoded: ReadoutFontSettings
-        if let data = UserDefaults.standard.data(forKey: readoutFontSettingsKey),
-           let value = try? JSONDecoder().decode(ReadoutFontSettings.self, from: data) {
-            decoded = value
-        } else {
-            decoded = ReadoutFontSettings()
-        }
-
-        return decoded
+        loadDecodedJSON(ReadoutFontSettings.self, key: readoutFontSettingsKey, default: ReadoutFontSettings())
     }
 
     private static func loadVisualMode() -> VisualMode {
