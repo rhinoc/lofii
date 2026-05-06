@@ -112,6 +112,10 @@ final class BongoInputMonitor {
     typealias ParamCallback = @MainActor @Sendable ([(String, Double)]) -> Void
     typealias KeyCallback   = @MainActor @Sendable (String, Bool) -> Void  // (imageName, pressed)
 
+    /// `AXTrustedCheckOptionPrompt` may re-surface on every `start()` if SwiftUI tears the
+    /// MTKView down/up; gate the system prompt to once per app launch for untrusted installs.
+    private static var didRequestAXTrustPromptThisProcess = false
+
     private let paramCallback: ParamCallback
     private let keyCallback:   KeyCallback
     private let keyCodeToOverlayStem: [CGKeyCode: String]
@@ -123,6 +127,7 @@ final class BongoInputMonitor {
     private var mouseMonitor:          Any?
     private var localKeyboardMonitor:  Any?
     private var localMouseMonitor:     Any?
+    private var didBecomeActiveObserver: NSObjectProtocol?
 
     private var activeKeyImage: String?
     private var rightKeyHeld   = false
@@ -145,25 +150,9 @@ final class BongoInputMonitor {
     // MARK: Start / Stop
 
     func start() {
-        guard keyboardMonitor == nil else { return }
+        guard localKeyboardMonitor == nil else { return }
 
-        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
-        // Silent check first: `prompt: true` on every launch can surface system UI
-        // even when the app is already trusted on some macOS versions.
-        let silentOptions = [promptKey: false] as CFDictionary
-        var trusted = AXIsProcessTrustedWithOptions(silentOptions)
-        if !trusted {
-            let promptOptions = [promptKey: true] as CFDictionary
-            trusted = AXIsProcessTrustedWithOptions(promptOptions)
-        }
-
-        if trusted {
-            keyboardMonitor = NSEvent.addGlobalMonitorForEvents(
-                matching: [.keyDown, .keyUp]
-            ) { [weak self] event in
-                Task { @MainActor [weak self] in self?.handleKey(event) }
-            }
-        }
+        installTrustedGlobalMonitorsIfNeeded()
 
         // Local monitors receive keyboard / mouse while this process is active
         // (including when our widget window is key). Global monitors only
@@ -174,12 +163,6 @@ final class BongoInputMonitor {
             return event
         }
 
-        mouseMonitor = NSEvent.addGlobalMonitorForEvents(
-            matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp]
-        ) { [weak self] event in
-            Task { @MainActor [weak self] in self?.handleMouse(event) }
-        }
-
         localMouseMonitor = NSEvent.addLocalMonitorForEvents(
             matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp]
         ) { [weak self] event in
@@ -188,9 +171,54 @@ final class BongoInputMonitor {
             return event
         }
 
+        if didBecomeActiveObserver == nil {
+            didBecomeActiveObserver = NotificationCenter.default.addObserver(
+                forName: NSApplication.didBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.installTrustedGlobalMonitorsIfNeeded()
+                }
+            }
+        }
+    }
+
+    /// Re-register global monitors after the user enables Accessibility (or on resume) without restarting.
+    private func installTrustedGlobalMonitorsIfNeeded() {
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let silentOptions = [promptKey: false] as CFDictionary
+        if !AXIsProcessTrustedWithOptions(silentOptions) {
+            if !Self.didRequestAXTrustPromptThisProcess {
+                Self.didRequestAXTrustPromptThisProcess = true
+                let promptOptions = [promptKey: true] as CFDictionary
+                _ = AXIsProcessTrustedWithOptions(promptOptions)
+            }
+            return
+        }
+
+        if keyboardMonitor == nil {
+            keyboardMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.keyDown, .keyUp]
+            ) { [weak self] event in
+                Task { @MainActor [weak self] in self?.handleKey(event) }
+            }
+        }
+
+        if mouseMonitor == nil {
+            mouseMonitor = NSEvent.addGlobalMonitorForEvents(
+                matching: [.leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp]
+            ) { [weak self] event in
+                Task { @MainActor [weak self] in self?.handleMouse(event) }
+            }
+        }
     }
 
     func stop() {
+        if let o = didBecomeActiveObserver {
+            NotificationCenter.default.removeObserver(o)
+            didBecomeActiveObserver = nil
+        }
         if let m = keyboardMonitor       { NSEvent.removeMonitor(m); keyboardMonitor       = nil }
         if let m = localKeyboardMonitor  { NSEvent.removeMonitor(m); localKeyboardMonitor  = nil }
         if let m = mouseMonitor          { NSEvent.removeMonitor(m); mouseMonitor          = nil }
