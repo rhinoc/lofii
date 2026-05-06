@@ -112,9 +112,9 @@ final class BongoInputMonitor {
     typealias ParamCallback = @MainActor @Sendable ([(String, Double)]) -> Void
     typealias KeyCallback   = @MainActor @Sendable (String, Bool) -> Void  // (imageName, pressed)
 
-    /// `AXTrustedCheckOptionPrompt` may re-surface on every `start()` if SwiftUI tears the
-    /// MTKView down/up; gate the system prompt to once per app launch for untrusted installs.
-    private static var didRequestAXTrustPromptThisProcess = false
+    /// `AXTrustedCheckOptionPrompt` must not run from `didBecomeActive` (can fire many times at
+    /// launch); gate the system sheet to **once per process** and only from `start()`.
+    private static var didPresentAXTrustPromptThisProcess = false
 
     private let paramCallback: ParamCallback
     private let keyCallback:   KeyCallback
@@ -152,7 +152,7 @@ final class BongoInputMonitor {
     func start() {
         guard localKeyboardMonitor == nil else { return }
 
-        installTrustedGlobalMonitorsIfNeeded()
+        installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: true)
 
         // Local monitors receive keyboard / mouse while this process is active
         // (including when our widget window is key). Global monitors only
@@ -177,26 +177,39 @@ final class BongoInputMonitor {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    self?.installTrustedGlobalMonitorsIfNeeded()
+                // Run synchronously on the main queue: avoids queuing multiple
+                // `installTrusted…` passes before `keyboardMonitor` is set (and
+                // avoids stacking several deferred MainActor tasks at launch).
+                guard let self else { return }
+                MainActor.assumeIsolated {
+                    self.installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: false)
                 }
             }
         }
     }
 
-    /// Re-register global monitors after the user enables Accessibility (or on resume) without restarting.
-    private func installTrustedGlobalMonitorsIfNeeded() {
+    /// Re-register global monitors when Accessibility is granted. Optionally (only from `start()`)
+    /// may show the system trust sheet **once per process** if still untrusted.
+    private func installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: Bool) {
         let promptKey = "AXTrustedCheckOptionPrompt" as CFString
         let silentOptions = [promptKey: false] as CFDictionary
-        if !AXIsProcessTrustedWithOptions(silentOptions) {
-            if !Self.didRequestAXTrustPromptThisProcess {
-                Self.didRequestAXTrustPromptThisProcess = true
-                let promptOptions = [promptKey: true] as CFDictionary
-                _ = AXIsProcessTrustedWithOptions(promptOptions)
-            }
+
+        if AXIsProcessTrustedWithOptions(silentOptions) {
+            registerGlobalMonitorsIfTrusted()
             return
         }
 
+        if allowAXTrustPrompt, !Self.didPresentAXTrustPromptThisProcess {
+            Self.didPresentAXTrustPromptThisProcess = true
+            let promptOptions = [promptKey: true] as CFDictionary
+            _ = AXIsProcessTrustedWithOptions(promptOptions)
+        }
+
+        guard AXIsProcessTrustedWithOptions(silentOptions) else { return }
+        registerGlobalMonitorsIfTrusted()
+    }
+
+    private func registerGlobalMonitorsIfTrusted() {
         if keyboardMonitor == nil {
             keyboardMonitor = NSEvent.addGlobalMonitorForEvents(
                 matching: [.keyDown, .keyUp]
