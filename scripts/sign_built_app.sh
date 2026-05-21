@@ -25,20 +25,17 @@ sign_parts() {
   codesign --force "$@" --sign "$id" "$APP"
 }
 
-if [[ -n "$IDENTITY" ]]; then
-  echo "Signing with: $IDENTITY"
-  if [[ "$IDENTITY" == Developer\ ID* ]]; then
-    sign_parts "$IDENTITY" --options runtime --timestamp
-  else
-    sign_parts "$IDENTITY"
-  fi
-  codesign --verify --verbose=2 "$APP"
-else
-  echo "No Apple Development / Developer ID identity in keychain; ad-hoc signing bundle only."
-  if [[ -d "$APP/Contents/Frameworks/Sparkle.framework" ]]; then
-    codesign --force --deep --sign - "$APP/Contents/Frameworks/Sparkle.framework"
-  fi
-  codesign --force --sign - "$APP/Contents/Frameworks/libLive2DCubismCore.dylib"
-  codesign --force --sign - "$APP/Contents/MacOS/lofii"
-  codesign --force --sign - "$APP"
+if [[ -z "$IDENTITY" ]]; then
+  echo "error: no Apple Development or Developer ID signing identity found." >&2
+  echo "Refusing to publish an ad-hoc signed Sparkle/GitHub release." >&2
+  exit 1
 fi
+
+echo "Signing with: $IDENTITY"
+if [[ "$IDENTITY" == Developer\ ID* ]]; then
+  sign_parts "$IDENTITY" --options runtime --timestamp
+else
+  sign_parts "$IDENTITY"
+fi
+
+codesign --verify --verbose=2 "$APP"

@@ -649,6 +649,43 @@ enum BongoStageAnchor: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+/// Free placement for the fitted Bongo stage, stored as a ratio within the
+/// available layout range so it survives widget and model-size changes.
+struct BongoStageOriginRatio: Codable, Equatable, Sendable {
+    var x: Double
+    var y: Double
+
+    init(x: Double, y: Double) {
+        self.x = min(max(x, 0), 1)
+        self.y = min(max(y, 0), 1)
+    }
+
+    init(origin: CGPoint, container: CGSize, stage: CGSize) {
+        let maxX = max(0, container.width - stage.width)
+        let maxY = max(0, container.height - stage.height)
+        self.init(
+            x: maxX > 0 ? origin.x / maxX : 0,
+            y: maxY > 0 ? origin.y / maxY : 0
+        )
+    }
+
+    func resolvedOrigin(in container: CGSize, stage: CGSize) -> CGPoint {
+        let maxX = max(0, container.width - stage.width)
+        let maxY = max(0, container.height - stage.height)
+        return CGPoint(
+            x: min(max(CGFloat(x) * maxX, 0), maxX),
+            y: min(max(CGFloat(y) * maxY, 0), maxY)
+        )
+    }
+}
+
+struct BongoStagePlacement: Codable, Equatable, Sendable {
+    var anchor: BongoStageAnchor
+    var customOriginRatio: BongoStageOriginRatio?
+
+    static let `default` = BongoStagePlacement(anchor: .bottom, customOriginRatio: nil)
+}
+
 /// User scale for the Bongo Live2D stage (logical points cap before fitting).
 enum BongoStageScaleTier: String, CaseIterable, Identifiable, Codable, Sendable {
     case small
@@ -786,6 +823,7 @@ final class AppModel: ObservableObject {
             guard bongoOverlayVisible != oldValue else { return }
             UserDefaults.standard.set(bongoOverlayVisible, forKey: Self.bongoOverlayVisibleKey)
             if bongoOverlayVisible {
+                BongoInputMonitor.requestAccessibilityTrustPromptIfNeeded()
                 markBongoLive2DPending()
                 resetVisualStageLoadingGate(updateBongoLayer: false)
             } else {
@@ -971,11 +1009,31 @@ final class AppModel: ObservableObject {
     /// Bumped on `reloadBongoModelsFromDisk()` so `BongoView` tears down Live2D / Metal state and reloads from disk.
     @Published private(set) var bongoPackReloadToken: UInt = 0
 
-    @Published var bongoStageAnchor: BongoStageAnchor = AppModel.loadBongoStageAnchor() {
+    @Published var bongoStagePlacement: BongoStagePlacement = AppModel.loadBongoStagePlacement() {
         didSet {
-            guard bongoStageAnchor != oldValue else { return }
-            UserDefaults.standard.set(bongoStageAnchor.rawValue, forKey: Self.bongoStageAnchorKey)
+            guard bongoStagePlacement != oldValue else { return }
+            if let data = try? JSONEncoder().encode(bongoStagePlacement) {
+                UserDefaults.standard.set(data, forKey: Self.bongoStagePlacementKey)
+            }
+            UserDefaults.standard.set(bongoStagePlacement.anchor.rawValue, forKey: Self.bongoStageAnchorKey)
         }
+    }
+
+    var bongoStageAnchor: BongoStageAnchor {
+        get { bongoStagePlacement.anchor }
+        set { selectBongoStageAnchor(newValue) }
+    }
+
+    var hasCustomBongoStagePlacement: Bool {
+        bongoStagePlacement.customOriginRatio != nil
+    }
+
+    func selectBongoStageAnchor(_ anchor: BongoStageAnchor) {
+        bongoStagePlacement = BongoStagePlacement(anchor: anchor, customOriginRatio: nil)
+    }
+
+    func setBongoStageCustomOriginRatio(_ ratio: BongoStageOriginRatio) {
+        bongoStagePlacement = BongoStagePlacement(anchor: bongoStagePlacement.anchor, customOriginRatio: ratio)
     }
 
     @Published var bongoStageScaleTier: BongoStageScaleTier = AppModel.loadBongoStageScaleTier() {
@@ -1012,6 +1070,7 @@ final class AppModel: ObservableObject {
     private static let bongoCatModelKindKey = "lofii.bongoCatModelKind"
     private static let bongoCatPackSelectionKey = "lofii.bongoCatPackSelection"
     private static let bongoStageAnchorKey = "lofii.bongoStageAnchor"
+    private static let bongoStagePlacementKey = "lofii.bongoStagePlacement"
     private static let bongoStageScaleTierKey = "lofii.bongoStageScaleTier"
     private static let bongoInputTickRateKey = "lofii.bongoInputTickRate"
     private static let bongoMouseCursorSpaceKey = "lofii.bongoMouseCursorSpace"
@@ -1112,6 +1171,17 @@ final class AppModel: ObservableObject {
             return resolved
         }
         return .bundled(loadBongoCatModelKind())
+    }
+
+    private static func loadBongoStagePlacement() -> BongoStagePlacement {
+        if UserDefaults.standard.data(forKey: bongoStagePlacementKey) != nil {
+            return loadDecodedJSON(
+                BongoStagePlacement.self,
+                key: bongoStagePlacementKey,
+                default: BongoStagePlacement.default
+            )
+        }
+        return BongoStagePlacement(anchor: loadBongoStageAnchor(), customOriginRatio: nil)
     }
 
     private static func loadBongoStageAnchor() -> BongoStageAnchor {

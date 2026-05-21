@@ -136,6 +136,36 @@ func bongoMouseButtonReconcileClearsMissedRightMouseUp() async throws {
 }
 
 @Test
+func bongoStageOriginRatioSurvivesResizeAndClampsToVisibleRange() throws {
+    let ratio = BongoStageOriginRatio(
+        origin: CGPoint(x: 150, y: 100),
+        container: CGSize(width: 500, height: 300),
+        stage: CGSize(width: 200, height: 100)
+    )
+
+    let resized = ratio.resolvedOrigin(
+        in: CGSize(width: 800, height: 500),
+        stage: CGSize(width: 200, height: 100)
+    )
+
+    #expect(abs(resized.x - 300) < 0.001)
+    #expect(abs(resized.y - 200) < 0.001)
+
+    let clamped = BongoStageOriginRatio(
+        origin: CGPoint(x: 999, y: -50),
+        container: CGSize(width: 500, height: 300),
+        stage: CGSize(width: 200, height: 100)
+    )
+    let resolved = clamped.resolvedOrigin(
+        in: CGSize(width: 500, height: 300),
+        stage: CGSize(width: 200, height: 100)
+    )
+
+    #expect(resolved.x == 300)
+    #expect(resolved.y == 0)
+}
+
+@Test
 func crtResolvedOverscanIsAtLeastPreset() throws {
     let preset = CurvationStrength.balanced.resolvedOverscan
     let k = CurvationStrength.balanced.resolvedCurvationFactor

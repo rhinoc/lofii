@@ -386,7 +386,7 @@ struct WidgetRootView: View {
                         ? BongoLive2DHitGeometry.appKitLive2DStageFrame(
                             in: geo.size,
                             maxStageSize: model.bongoCatPack.maxLogicalStageSize(scaledBy: model.bongoStageScaleTier),
-                            anchor: model.bongoStageAnchor,
+                            placement: model.bongoStagePlacement,
                             maxFittedStageHeightFractionOfContainer: model.bongoStageScaleTier
                                 .maxFittedStageHeightFractionOfContainer,
                             crt: model.crt
@@ -2886,7 +2886,12 @@ private struct WheelAndContextCatcher: NSViewRepresentable {
         }
 
         override func hitTest(_ point: NSPoint) -> NSView? {
-            if bongoPassThroughPrimaryHits,
+            let eventType = NSApp.currentEvent?.type
+            let isPrimaryMouseEvent = eventType == .leftMouseDown
+                || eventType == .leftMouseDragged
+                || eventType == .leftMouseUp
+            if isPrimaryMouseEvent,
+               bongoPassThroughPrimaryHits,
                bongoLive2DStageFrame.width > 1,
                bongoLive2DStageFrame.height > 1,
                bongoLive2DStageFrame.contains(point) {
@@ -3085,10 +3090,17 @@ enum SettingsContextMenu {
 
         let bongoPosItem = NSMenuItem(title: "Alignment", action: nil, keyEquivalent: "")
         let bongoPosMenu = NSMenu()
+        if model.hasCustomBongoStagePlacement {
+            let customItem = NSMenuItem(title: "Custom", action: nil, keyEquivalent: "")
+            customItem.state = .on
+            customItem.isEnabled = false
+            bongoPosMenu.addItem(customItem)
+            bongoPosMenu.addItem(.separator())
+        }
         addPositionRows(
             to: bongoPosMenu,
             rows: bongoPositionRows,
-            selected: model.bongoStageAnchor,
+            selected: model.hasCustomBongoStagePlacement ? nil : model.bongoStageAnchor,
             title: \.label,
             rawValue: \.rawValue,
             action: #selector(MenuTarget.selectBongoStageAnchor(_:))
@@ -3439,7 +3451,7 @@ enum SettingsContextMenu {
     private static func addPositionRows<Position: Equatable>(
         to menu: NSMenu,
         rows: [(String, [Position])],
-        selected: Position,
+        selected: Position?,
         title: KeyPath<Position, String>,
         rawValue: KeyPath<Position, String>,
         action: Selector
@@ -3551,7 +3563,7 @@ final class MenuTarget: NSObject {
               let anchor = BongoStageAnchor(rawValue: raw),
               let model
         else { return }
-        model.bongoStageAnchor = anchor
+        model.selectBongoStageAnchor(anchor)
     }
 
     @objc func selectBongoStageScaleTier(_ sender: NSMenuItem) {

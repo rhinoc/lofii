@@ -34,6 +34,9 @@ NS_ASSUME_NONNULL_BEGIN
 - (void)applyMouseCursorXRatio:(double)xRatio yRatio:(double)yRatio mouseMirror:(BOOL)mouseMirror;
 /// Starts a random motion from the primary motion group. Returns `NO` if a tap-triggered motion is already playing or the model has no motions.
 - (BOOL)tryStartRandomTapMotion;
+/// Returns the visible Live2D drawable hit rect inside a full Bongo stage rect.
+/// The input and output share the same coordinate system.
+- (CGRect)modelDrawRectForStageRect:(CGRect)stageRect;
 - (void)drawWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer
           renderPassDescriptor:(MTLRenderPassDescriptor *)renderPassDescriptor
                       viewport:(MTLViewport)viewport

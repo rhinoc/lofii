@@ -112,8 +112,9 @@ final class BongoInputMonitor {
     typealias ParamCallback = @MainActor @Sendable ([(String, Double)]) -> Void
     typealias KeyCallback   = @MainActor @Sendable (String, Bool) -> Void  // (imageName, pressed)
 
-    /// `AXTrustedCheckOptionPrompt` must not run from `didBecomeActive` (can fire many times at
-    /// launch); gate the system sheet to **once per process** and only from `start()`.
+    /// `AXTrustedCheckOptionPrompt` must only run from an explicit user action.
+    /// Startup and app-activation checks stay silent so a stale TCC entry does
+    /// not produce the system sheet on every launch.
     private static var didPresentAXTrustPromptThisProcess = false
 
     private let paramCallback: ParamCallback
@@ -152,7 +153,7 @@ final class BongoInputMonitor {
     func start() {
         guard localKeyboardMonitor == nil else { return }
 
-        installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: true)
+        installTrustedGlobalMonitorsIfNeeded()
 
         // Local monitors receive keyboard / mouse while this process is active
         // (including when our widget window is key). Global monitors only
@@ -182,28 +183,30 @@ final class BongoInputMonitor {
                 // avoids stacking several deferred MainActor tasks at launch).
                 guard let self else { return }
                 MainActor.assumeIsolated {
-                    self.installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: false)
+                    self.installTrustedGlobalMonitorsIfNeeded()
                 }
             }
         }
     }
 
-    /// Re-register global monitors when Accessibility is granted. Optionally (only from `start()`)
-    /// may show the system trust sheet **once per process** if still untrusted.
-    private func installTrustedGlobalMonitorsIfNeeded(allowAXTrustPrompt: Bool) {
+    @discardableResult
+    static func requestAccessibilityTrustPromptIfNeeded() -> Bool {
         let promptKey = "AXTrustedCheckOptionPrompt" as CFString
         let silentOptions = [promptKey: false] as CFDictionary
 
-        if AXIsProcessTrustedWithOptions(silentOptions) {
-            registerGlobalMonitorsIfTrusted()
-            return
-        }
+        guard !AXIsProcessTrustedWithOptions(silentOptions) else { return true }
+        guard !didPresentAXTrustPromptThisProcess else { return false }
 
-        if allowAXTrustPrompt, !Self.didPresentAXTrustPromptThisProcess {
-            Self.didPresentAXTrustPromptThisProcess = true
-            let promptOptions = [promptKey: true] as CFDictionary
-            _ = AXIsProcessTrustedWithOptions(promptOptions)
-        }
+        didPresentAXTrustPromptThisProcess = true
+        let promptOptions = [promptKey: true] as CFDictionary
+        return AXIsProcessTrustedWithOptions(promptOptions)
+    }
+
+    /// Re-register global monitors when Accessibility is granted. This path is
+    /// intentionally silent; prompting belongs to explicit Bongo enable actions.
+    private func installTrustedGlobalMonitorsIfNeeded() {
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let silentOptions = [promptKey: false] as CFDictionary
 
         guard AXIsProcessTrustedWithOptions(silentOptions) else { return }
         registerGlobalMonitorsIfTrusted()

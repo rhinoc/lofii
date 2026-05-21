@@ -429,6 +429,127 @@ public:
         renderer->DrawModel();
     }
 
+    CGRect ModelDrawRectForStageRect(CGRect stageRect)
+    {
+        CubismModel* model = GetModel();
+        if (model == nullptr || stageRect.size.width <= 0.0 || stageRect.size.height <= 0.0)
+        {
+            return CGRectZero;
+        }
+
+        const CGFloat cw = static_cast<CGFloat>(model->GetCanvasWidth());
+        const CGFloat ch = static_cast<CGFloat>(model->GetCanvasHeight());
+        if (cw <= 0.0 || ch <= 0.0)
+        {
+            return stageRect;
+        }
+
+        const CGFloat scale = std::min(stageRect.size.width / cw, stageRect.size.height / ch);
+        const CGFloat modelW = cw * scale;
+        const CGFloat modelH = ch * scale;
+        return CGRectMake(
+            stageRect.origin.x + (stageRect.size.width - modelW) * 0.5,
+            stageRect.origin.y,
+            modelW,
+            modelH
+        );
+    }
+
+    CGRect VisibleDrawableRectForStageRect(CGRect stageRect)
+    {
+        CubismModel* model = GetModel();
+        const CGRect modelRect = ModelDrawRectForStageRect(stageRect);
+        if (model == nullptr || CGRectIsEmpty(modelRect))
+        {
+            return modelRect;
+        }
+
+        const float vw = static_cast<float>(modelRect.size.width);
+        const float vh = static_cast<float>(modelRect.size.height);
+        if (vw <= 0.0f || vh <= 0.0f)
+        {
+            return modelRect;
+        }
+
+        const float cw = model->GetCanvasWidth();
+        const float ch = model->GetCanvasHeight();
+        CubismMatrix44 projection;
+        if (vw < vh)
+        {
+            projection.Scale(1.0f, vw / vh);
+        }
+        else
+        {
+            projection.Scale(vh / vw, 1.0f);
+        }
+
+        CubismModelMatrix modelMatrix(cw, ch);
+        if (_hasLayout)
+        {
+            modelMatrix.SetupFromLayout(_layout);
+        }
+        projection.MultiplyByMatrix(&modelMatrix);
+
+        bool hasBounds = false;
+        CGFloat minX = 0.0;
+        CGFloat minY = 0.0;
+        CGFloat maxX = 0.0;
+        CGFloat maxY = 0.0;
+
+        const csmInt32 drawableCount = model->GetDrawableCount();
+        for (csmInt32 i = 0; i < drawableCount; ++i)
+        {
+            if (!model->GetDrawableDynamicFlagIsVisible(i) || model->GetDrawableOpacity(i) <= 0.01f)
+            {
+                continue;
+            }
+
+            const csmInt32 vertexCount = model->GetDrawableVertexCount(i);
+            const csmFloat32* vertices = model->GetDrawableVertices(i);
+            if (vertexCount <= 0 || vertices == nullptr)
+            {
+                continue;
+            }
+
+            for (csmInt32 j = 0; j < vertexCount; ++j)
+            {
+                const csmFloat32 vx = vertices[Constant::VertexOffset + j * Constant::VertexStep];
+                const csmFloat32 vy = vertices[Constant::VertexOffset + j * Constant::VertexStep + 1];
+                const csmFloat32 clipX = projection.TransformX(vx);
+                const csmFloat32 clipY = projection.TransformY(vy);
+                if (!std::isfinite(clipX) || !std::isfinite(clipY))
+                {
+                    continue;
+                }
+
+                const CGFloat px = modelRect.origin.x + (static_cast<CGFloat>(clipX) + 1.0) * 0.5 * modelRect.size.width;
+                const CGFloat py = modelRect.origin.y + (static_cast<CGFloat>(clipY) + 1.0) * 0.5 * modelRect.size.height;
+                if (!hasBounds)
+                {
+                    minX = maxX = px;
+                    minY = maxY = py;
+                    hasBounds = true;
+                }
+                else
+                {
+                    minX = std::min(minX, px);
+                    minY = std::min(minY, py);
+                    maxX = std::max(maxX, px);
+                    maxY = std::max(maxY, py);
+                }
+            }
+        }
+
+        if (!hasBounds || maxX <= minX || maxY <= minY)
+        {
+            return modelRect;
+        }
+
+        const CGFloat hitSlop = 6.0;
+        CGRect rect = CGRectInset(CGRectMake(minX, minY, maxX - minX, maxY - minY), -hitSlop, -hitSlop);
+        return CGRectIntersection(rect, modelRect);
+    }
+
 private:
     static void OnTapMotionFinished(ACubismMotion* motion)
     {
@@ -645,6 +766,16 @@ private:
     }
 
     return _model->TryStartRandomTapMotion() ? YES : NO;
+}
+
+- (CGRect)modelDrawRectForStageRect:(CGRect)stageRect
+{
+    if (!_cubismReady || !_model)
+    {
+        return CGRectZero;
+    }
+
+    return _model->VisibleDrawableRectForStageRect(stageRect);
 }
 
 - (void)drawWithCommandBuffer:(id<MTLCommandBuffer>)commandBuffer

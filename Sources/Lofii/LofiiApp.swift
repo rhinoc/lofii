@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import OSLog
+import ServiceManagement
 import Sparkle
 
 @MainActor
@@ -8,6 +9,7 @@ import Sparkle
 struct LofiiApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var menuDebugRevealMonitor = MenuDebugRevealMonitor()
+    @StateObject private var loginItemController = LoginItemController()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// Sparkle auto-update (feed + EdDSA public key in embedded `Info.plist`).
@@ -113,6 +115,19 @@ struct LofiiApp: App {
                 toggleWidgetWindow()
             }
 
+            Toggle("Always on Top", isOn: Binding(
+                get: { model.alwaysOnTop },
+                set: { model.alwaysOnTop = $0 }
+            ))
+
+            Toggle("Start on Login", isOn: Binding(
+                get: { loginItemController.isEnabled },
+                set: { loginItemController.setEnabled($0) }
+            ))
+            .onAppear {
+                loginItemController.refresh()
+            }
+
             Divider()
 
             Button(model.isPlaying ? "Pause" : "Play") {
@@ -127,16 +142,9 @@ struct LofiiApp: App {
                 model.nextStation()
             }
 
-            Divider()
-
-            Toggle("Always on Top", isOn: Binding(
-                get: { model.alwaysOnTop },
-                set: { model.alwaysOnTop = $0 }
-            ))
-
-            Divider()
-
             if model.debugModeEnabled || menuDebugRevealMonitor.revealKeyPressed {
+                Divider()
+
                 Toggle("Debug Mode", isOn: Binding(
                     get: { model.debugModeEnabled },
                     set: { model.debugModeEnabled = $0 }
@@ -206,6 +214,44 @@ private final class MenuDebugRevealMonitor: ObservableObject {
 
     private static func currentRevealKeyPressed() -> Bool {
         !NSEvent.modifierFlags.intersection([.command, .option]).isEmpty
+    }
+}
+
+@MainActor
+private final class LoginItemController: ObservableObject {
+    private let logger = Logger(subsystem: "dev.rhinoc.lofii", category: "LoginItem")
+
+    @Published private var status = SMAppService.mainApp.status
+
+    var isEnabled: Bool {
+        switch status {
+        case .enabled, .requiresApproval:
+            true
+        case .notRegistered, .notFound:
+            false
+        @unknown default:
+            false
+        }
+    }
+
+    func refresh() {
+        status = SMAppService.mainApp.status
+    }
+
+    func setEnabled(_ enabled: Bool) {
+        do {
+            if enabled {
+                if status != .enabled && status != .requiresApproval {
+                    try SMAppService.mainApp.register()
+                }
+            } else if status != .notRegistered {
+                try SMAppService.mainApp.unregister()
+            }
+        } catch {
+            logger.error("Failed to update login item enabled=\(enabled, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
+
+        refresh()
     }
 }
 

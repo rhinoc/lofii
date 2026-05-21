@@ -164,7 +164,7 @@ private struct BongoUnifiedStage: View {
                         pack: pack,
                         bongoPackReloadToken: model.bongoPackReloadToken,
                         maxLogicalStageSize: pack.maxLogicalStageSize(scaledBy: model.bongoStageScaleTier),
-                        stageAnchor: model.bongoStageAnchor,
+                        stagePlacement: model.bongoStagePlacement,
                         desktopTint: model.bongoDesktopMaskTint,
                         pressedKeyImages: coordinator.pressedKeyImages,
                         artworkScrollWheel: artworkScrollWheel,
@@ -187,6 +187,9 @@ private struct BongoUnifiedStage: View {
                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
                         maxFittedStageHeightFraction: model.bongoStageScaleTier.maxFittedStageHeightFractionOfContainer,
                         layoutContainerSize: geo.size,
+                        onStagePlacementRatioChanged: { ratio in
+                            model.setBongoStageCustomOriginRatio(ratio)
+                        },
                         onLive2DWorkspaceReady: { model.markBongoLive2DReady() }
                     )
                     .frame(width: geo.size.width, height: geo.size.height)
@@ -443,16 +446,26 @@ private struct BongoUnifiedStage: View {
 private final class BongoStageMTKView: MTKView {
     var artworkScrollWheel: ((Double) -> Void)?
     var artworkContextMenu: (() -> NSMenu)?
-    /// Point in this view’s bounds; return whether it lies in the fitted Live2D stage rect.
+    /// Point in this view’s bounds; return whether it lies in the fitted Live2D model rect.
     var stageContainsPoint: ((CGPoint) -> Bool)?
     var onStageTap: (() -> Void)?
+    var onStageDrag: ((_ currentPoint: CGPoint, _ startPoint: CGPoint) -> Void)?
+    var onStageDragEnded: (() -> Void)?
 
-    private var pendingStageTap: (origin: CGPoint, time: TimeInterval)?
+    private var pendingStageInteraction: (origin: CGPoint, time: TimeInterval, isDragging: Bool)?
     private let stageTapMaxMove: CGFloat = 10
     private let stageTapMaxDuration: TimeInterval = 0.45
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override var acceptsFirstResponder: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        if let stageContainsPoint, !stageContainsPoint(point) {
+            return nil
+        }
+        return super.hitTest(point)
+    }
 
     override func scrollWheel(with event: NSEvent) {
         artworkScrollWheel?(Double(event.scrollingDeltaY))
@@ -466,16 +479,33 @@ private final class BongoStageMTKView: MTKView {
     override func mouseDown(with event: NSEvent) {
         super.mouseDown(with: event)
         guard event.buttonNumber == 0 else {
-            pendingStageTap = nil
+            pendingStageInteraction = nil
             return
         }
         let p = convert(event.locationInWindow, from: nil)
         let contains = stageContainsPoint?(p) == true
         if contains {
-            pendingStageTap = (p, event.timestamp)
+            pendingStageInteraction = (p, event.timestamp, false)
         } else {
-            pendingStageTap = nil
+            pendingStageInteraction = nil
         }
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        super.mouseDragged(with: event)
+        guard var interaction = pendingStageInteraction else {
+            return
+        }
+        let p = convert(event.locationInWindow, from: nil)
+        let dx = p.x - interaction.origin.x
+        let dy = p.y - interaction.origin.y
+        let distance = hypot(dx, dy)
+        if !interaction.isDragging {
+            guard distance > stageTapMaxMove else { return }
+            interaction.isDragging = true
+        }
+        pendingStageInteraction = interaction
+        onStageDrag?(p, interaction.origin)
     }
 
     override func mouseUp(with event: NSEvent) {
@@ -483,8 +513,16 @@ private final class BongoStageMTKView: MTKView {
         guard event.buttonNumber == 0 else {
             return
         }
-        defer { pendingStageTap = nil }
-        guard let start = pendingStageTap else {
+        defer {
+            if pendingStageInteraction?.isDragging == true {
+                onStageDragEnded?()
+            }
+            pendingStageInteraction = nil
+        }
+        guard let start = pendingStageInteraction else {
+            return
+        }
+        guard !start.isDragging else {
             return
         }
         guard event.clickCount <= 1 else {
@@ -518,7 +556,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     let bongoPackReloadToken: UInt
     /// User-tier cap (`pack.maxLogicalStageSize` × scale); drives fit, mask, and Live2D viewport.
     let maxLogicalStageSize: CGSize
-    let stageAnchor: BongoStageAnchor
+    let stagePlacement: BongoStagePlacement
     let desktopTint: BongoDesktopMaskTint
     let pressedKeyImages: Set<String>
     let artworkScrollWheel: ((Double) -> Void)?
@@ -542,6 +580,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     let maxFittedStageHeightFraction: CGFloat
     /// SwiftUI-proposed size for the stage (points). Prefer over `NSView.bounds` so layout matches `GeometryReader` during resize.
     let layoutContainerSize: CGSize
+    let onStagePlacementRatioChanged: (BongoStageOriginRatio) -> Void
     /// Mirrors `StageMetalPlayerView.onFirstFrameReady`: supplied by SwiftUI so `attach` never races `onAppear`.
     let onLive2DWorkspaceReady: () -> Void
 
@@ -575,7 +614,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
             pack: pack,
             bongoPackReloadToken: bongoPackReloadToken,
             maxLogicalStageSize: maxLogicalStageSize,
-            stageAnchor: stageAnchor,
+            stagePlacement: stagePlacement,
             desktopTint: desktopTint,
             pressedKeyImages: pressedKeyImages,
             artworkScrollWheel: artworkScrollWheel,
@@ -598,6 +637,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
             shatteredGlassFlipX: shatteredGlassFlipX,
             maxFittedStageHeightFraction: maxFittedStageHeightFraction,
             layoutContainerSize: layoutContainerSize,
+            onStagePlacementRatioChanged: onStagePlacementRatioChanged,
             onLive2DWorkspaceReady: onLive2DWorkspaceReady
         )
     }
@@ -663,7 +703,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var isPlaying = true
     private var pack: BongoCatPack = .bundled(.standard)
     private var maxLogicalStageSize: CGSize = .zero
-    private var stageAnchor: BongoStageAnchor = .center
+    private var stagePlacement: BongoStagePlacement = .default
     private var desktopTint: BongoDesktopMaskTint = .black
     private var pressedKeyImages: Set<String> = []
     private var crtSettings: CRTSettings = CRTSettings()
@@ -716,6 +756,16 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var lastFrameTime: CFTimeInterval = 0
     private var renderFramesPerSecond = 60
     private var nativeRendererSize: CGSize = .zero
+    private var onStagePlacementRatioChanged: (BongoStageOriginRatio) -> Void = { _ in }
+    private var activeStageDragStartPoint: CGPoint?
+    private var activeStageDragStartOrigin: CGPoint?
+    private var activeDragStagePlacement: BongoStagePlacement?
+    private var pendingDragCommitRatio: BongoStageOriginRatio?
+    private var isDraggingStage = false
+
+    private var effectiveStagePlacement: BongoStagePlacement {
+        activeDragStagePlacement ?? stagePlacement
+    }
 
     init(bongoCoordinator: BongoCoordinator) {
         self.bongoCoordinator = bongoCoordinator
@@ -748,7 +798,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         pack: BongoCatPack,
         bongoPackReloadToken: UInt,
         maxLogicalStageSize: CGSize,
-        stageAnchor: BongoStageAnchor,
+        stagePlacement: BongoStagePlacement,
         desktopTint: BongoDesktopMaskTint,
         pressedKeyImages: Set<String>,
         artworkScrollWheel: ((Double) -> Void)?,
@@ -771,9 +821,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         shatteredGlassFlipX: Double,
         maxFittedStageHeightFraction: CGFloat,
         layoutContainerSize: CGSize,
+        onStagePlacementRatioChanged: @escaping (BongoStageOriginRatio) -> Void,
         onLive2DWorkspaceReady: @escaping () -> Void
     ) {
         self.onLive2DWorkspaceReady = onLive2DWorkspaceReady
+        self.onStagePlacementRatioChanged = onStagePlacementRatioChanged
         let backgroundChanged = self.backgroundSource != background
         let playbackChanged = self.isPlaying != isPlaying
         let cappedFPS = StageMetalMTKRuntime.clampedPreferredFramesPerSecond(renderFramesPerSecond)
@@ -809,7 +861,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         }
         self.pack = pack
         self.maxLogicalStageSize = maxLogicalStageSize
-        self.stageAnchor = stageAnchor
+        self.stagePlacement = stagePlacement
+        if activeDragStagePlacement == stagePlacement {
+            activeDragStagePlacement = nil
+        }
         self.desktopTint = desktopTint
         self.pressedKeyImages = pressedKeyImages
         self.crtSettings = crt
@@ -818,11 +873,17 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             stageView.artworkContextMenu = artworkContextMenu
             stageView.stageContainsPoint = { [weak self] point in
                 guard let self, let v = self.view else { return false }
-                let rect = self.live2DStageRectInViewBounds(v)
+                let rect = self.modelHitRectInViewBounds(v)
                 return rect.contains(point)
             }
             stageView.onStageTap = { [weak self] in
                 _ = self?.bongoCoordinator.tryStartRandomTapMotionIfNotBusy()
+            }
+            stageView.onStageDrag = { [weak self] currentPoint, startPoint in
+                self?.dragBongoStage(currentPoint: currentPoint, startPoint: startPoint)
+            }
+            stageView.onStageDragEnded = { [weak self] in
+                self?.finishBongoStageDrag()
             }
         }
         self.curvationFactor = curvationFactor
@@ -886,29 +947,84 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
-    /// Live2D draw rect in view coordinates (matches `stageRectInPixels` layout in points).
-    private func live2DStageRectInViewBounds(_ view: NSView) -> CGRect {
+    private func stageLayout(in view: NSView) -> (container: CGSize, stage: CGSize, origin: CGPoint)? {
         let container = pointsLayoutContainer(view: view)
-        guard container.width > 0, container.height > 0 else { return .zero }
+        guard container.width > 0, container.height > 0 else { return nil }
         let stage = BongoStageLayout.fittedStageSize(
             in: container,
             maxStageSize: maxLogicalStageSize,
             maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFraction
         )
+        guard stage.width > 0, stage.height > 0 else { return nil }
         let edgeInset = crtSettings.resolvedBongoStageEdgeInset(containerSize: container)
         let origin = BongoStageLayout.stageOrigin(
             in: container,
             stage: stage,
-            anchor: stageAnchor,
+            placement: effectiveStagePlacement,
             edgeInset: edgeInset
         )
-        let topLeftRect = CGRect(origin: origin, size: stage)
+        return (container, stage, origin)
+    }
+
+    /// Live2D draw rect in view coordinates (matches `stageRectInPixels` layout in points).
+    private func live2DStageRectInViewBounds(_ view: NSView) -> CGRect {
+        guard let layout = stageLayout(in: view) else { return .zero }
+        let topLeftRect = CGRect(origin: layout.origin, size: layout.stage)
         return CGRect(
             x: topLeftRect.minX,
-            y: container.height - topLeftRect.maxY,
+            y: layout.container.height - topLeftRect.maxY,
             width: topLeftRect.width,
             height: topLeftRect.height
         )
+    }
+
+    private func modelHitRectInViewBounds(_ view: NSView) -> CGRect {
+        let stageRect = live2DStageRectInViewBounds(view)
+        guard !stageRect.isEmpty else { return .zero }
+        let modelRect = bongoCoordinator.modelDrawRectForStageRect(stageRect)
+        return modelRect.isEmpty ? stageRect : modelRect
+    }
+
+    private func dragBongoStage(currentPoint: CGPoint, startPoint: CGPoint) {
+        guard let view, let layout = stageLayout(in: view) else { return }
+        if activeStageDragStartPoint != startPoint || activeStageDragStartOrigin == nil {
+            activeStageDragStartPoint = startPoint
+            activeStageDragStartOrigin = layout.origin
+            beginBongoStageDragIfNeeded()
+        }
+        guard let startOrigin = activeStageDragStartOrigin else { return }
+        let proposedOrigin = CGPoint(
+            x: startOrigin.x + currentPoint.x - startPoint.x,
+            y: startOrigin.y - (currentPoint.y - startPoint.y)
+        )
+        let ratio = BongoStageOriginRatio(
+            origin: proposedOrigin,
+            container: layout.container,
+            stage: layout.stage
+        )
+        activeDragStagePlacement = BongoStagePlacement(anchor: stagePlacement.anchor, customOriginRatio: ratio)
+        pendingDragCommitRatio = ratio
+    }
+
+    private func beginBongoStageDragIfNeeded() {
+        guard !isDraggingStage else { return }
+        isDraggingStage = true
+        view?.preferredFramesPerSecond = StageMetalMTKRuntime.displayMaximumFramesPerSecond
+        view?.isPaused = false
+        view?.enableSetNeedsDisplay = false
+    }
+
+    private func finishBongoStageDrag() {
+        defer {
+            activeStageDragStartPoint = nil
+            activeStageDragStartOrigin = nil
+            pendingDragCommitRatio = nil
+            isDraggingStage = false
+            view?.preferredFramesPerSecond = renderFramesPerSecond
+            StageMetalMTKRuntime.syncDrawLoopToPlayback(view: view, isPlaying: isPlaying)
+        }
+        guard let ratio = pendingDragCommitRatio else { return }
+        onStagePlacementRatioChanged(ratio)
     }
 
     func draw(in view: MTKView) {
@@ -1594,27 +1710,14 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     private func stageRectInPixels(viewportSize: CGSize) -> CGRect {
         guard let view else { return .zero }
-        let container = pointsLayoutContainer(view: view)
-        guard container.width > 0, container.height > 0 else { return .zero }
-        let stagePoints = BongoStageLayout.fittedStageSize(
-            in: container,
-            maxStageSize: maxLogicalStageSize,
-            maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFraction
-        )
-        let edgeInset = crtSettings.resolvedBongoStageEdgeInset(containerSize: container)
-        let originPoints = BongoStageLayout.stageOrigin(
-            in: container,
-            stage: stagePoints,
-            anchor: stageAnchor,
-            edgeInset: edgeInset
-        )
-        let scaleX = viewportSize.width / max(container.width, 1)
-        let scaleY = viewportSize.height / max(container.height, 1)
+        guard let layout = stageLayout(in: view) else { return .zero }
+        let scaleX = viewportSize.width / max(layout.container.width, 1)
+        let scaleY = viewportSize.height / max(layout.container.height, 1)
         return CGRect(
-            x: originPoints.x * scaleX,
-            y: originPoints.y * scaleY,
-            width: stagePoints.width * scaleX,
-            height: stagePoints.height * scaleY
+            x: layout.origin.x * scaleX,
+            y: layout.origin.y * scaleY,
+            width: layout.stage.width * scaleX,
+            height: layout.stage.height * scaleY
         )
     }
 
@@ -1626,7 +1729,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         guard let endpoints = BongoStageLayout.cutLineEndpoints(
             in: container,
             maxStageSize: maxLogicalStageSize,
-            anchor: stageAnchor,
+            placement: effectiveStagePlacement,
             desktopLayout: desktopLayout,
             maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFraction,
             edgeInset: edgeInset
@@ -1769,6 +1872,13 @@ private enum BongoStageLayout {
         }
     }
 
+    static func stageOrigin(in container: CGSize, stage: CGSize, placement: BongoStagePlacement, edgeInset: CGFloat) -> CGPoint {
+        if let customOriginRatio = placement.customOriginRatio {
+            return customOriginRatio.resolvedOrigin(in: container, stage: stage)
+        }
+        return stageOrigin(in: container, stage: stage, anchor: placement.anchor, edgeInset: edgeInset)
+    }
+
     static func stageCenter(in container: CGSize, stage: CGSize, anchor: BongoStageAnchor, edgeInset: CGFloat) -> CGPoint {
         let origin = stageOrigin(in: container, stage: stage, anchor: anchor, edgeInset: edgeInset)
         return CGPoint(
@@ -1783,7 +1893,7 @@ private enum BongoStageLayout {
     static func cutLineEndpoints(
         in container: CGSize,
         maxStageSize: CGSize,
-        anchor: BongoStageAnchor,
+        placement: BongoStagePlacement,
         desktopLayout: BongoDesktopLayout,
         maxFittedStageHeightFractionOfContainer: CGFloat = 1,
         edgeInset: CGFloat
@@ -1795,7 +1905,7 @@ private enum BongoStageLayout {
         )
         guard stage.width > 0, stage.height > 0 else { return nil }
 
-        let stageOrigin = stageOrigin(in: container, stage: stage, anchor: anchor, edgeInset: edgeInset)
+        let stageOrigin = stageOrigin(in: container, stage: stage, placement: placement, edgeInset: edgeInset)
         let halfDy = (cutLineAngleN(for: maxStageSize, desktopLayout: desktopLayout) * stage.height) / 2
         let midY = desktopLayout.cutLineMidYRatio * stage.height
         // Stage-local cut-line endpoints (left edge x=0, right edge x=stageW).
@@ -1820,7 +1930,7 @@ private enum BongoStageLayout {
     static func live2DStageFrame(
         in container: CGSize,
         maxStageSize: CGSize,
-        anchor: BongoStageAnchor,
+        placement: BongoStagePlacement,
         maxFittedStageHeightFractionOfContainer: CGFloat = 1,
         edgeInset: CGFloat
     ) -> CGRect {
@@ -1829,7 +1939,7 @@ private enum BongoStageLayout {
             maxStageSize: maxStageSize,
             maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFractionOfContainer
         )
-        let origin = stageOrigin(in: container, stage: stage, anchor: anchor, edgeInset: edgeInset)
+        let origin = stageOrigin(in: container, stage: stage, placement: placement, edgeInset: edgeInset)
         return CGRect(origin: origin, size: stage)
     }
 }
@@ -1839,7 +1949,7 @@ enum BongoLive2DHitGeometry {
     static func live2DStageFrame(
         in container: CGSize,
         maxStageSize: CGSize,
-        anchor: BongoStageAnchor,
+        placement: BongoStagePlacement,
         maxFittedStageHeightFractionOfContainer: CGFloat = 1,
         crt: CRTSettings
     ) -> CGRect {
@@ -1847,7 +1957,7 @@ enum BongoLive2DHitGeometry {
         return BongoStageLayout.live2DStageFrame(
             in: container,
             maxStageSize: maxStageSize,
-            anchor: anchor,
+            placement: placement,
             maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFractionOfContainer,
             edgeInset: edgeInset
         )
@@ -1858,14 +1968,14 @@ enum BongoLive2DHitGeometry {
     static func appKitLive2DStageFrame(
         in container: CGSize,
         maxStageSize: CGSize,
-        anchor: BongoStageAnchor,
+        placement: BongoStagePlacement,
         maxFittedStageHeightFractionOfContainer: CGFloat = 1,
         crt: CRTSettings
     ) -> CGRect {
         let frame = live2DStageFrame(
             in: container,
             maxStageSize: maxStageSize,
-            anchor: anchor,
+            placement: placement,
             maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFractionOfContainer,
             crt: crt
         )
@@ -1962,6 +2072,10 @@ final class BongoCoordinator: ObservableObject {
 
     func resizeNativeRenderer(width: Int, height: Int) {
         nativeRenderer?.resize(toWidth: UInt(max(width, 1)), height: UInt(max(height, 1)))
+    }
+
+    func modelDrawRectForStageRect(_ stageRect: CGRect) -> CGRect {
+        nativeRenderer?.modelDrawRect(forStageRect: stageRect) ?? stageRect
     }
 
     func drawNativeRenderer(

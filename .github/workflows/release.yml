@@ -33,6 +33,10 @@ jobs:
         run: scripts/install_cubism_core.sh
 
       - name: Import signing certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: scripts/code_sign.sh
 
       - name: Bump version
