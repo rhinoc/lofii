@@ -7,6 +7,7 @@ import Sparkle
 @main
 struct LofiiApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var menuDebugRevealMonitor = MenuDebugRevealMonitor()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// Sparkle auto-update (feed + EdDSA public key in embedded `Info.plist`).
@@ -135,13 +136,15 @@ struct LofiiApp: App {
 
             Divider()
 
-            Toggle("Debug Mode", isOn: Binding(
-                get: { model.debugModeEnabled },
-                set: { model.debugModeEnabled = $0 }
-            ))
-            .help("Developer overlays; readout title/artist repeat for marquee testing when on")
+            if model.debugModeEnabled || menuDebugRevealMonitor.revealKeyPressed {
+                Toggle("Debug Mode", isOn: Binding(
+                    get: { model.debugModeEnabled },
+                    set: { model.debugModeEnabled = $0 }
+                ))
+                .help("Developer overlays; readout title/artist repeat for marquee testing when on")
 
-            Divider()
+                Divider()
+            }
 
             Button("Check for Updates…") {
                 updaterController.checkForUpdates(nil)
@@ -175,6 +178,35 @@ struct LofiiApp: App {
     }
 
     @Environment(\.openWindow) private var openWindow
+}
+
+@MainActor
+private final class MenuDebugRevealMonitor: ObservableObject {
+    @Published private(set) var revealKeyPressed = MenuDebugRevealMonitor.currentRevealKeyPressed()
+
+    private nonisolated(unsafe) var timer: Timer?
+
+    init() {
+        timer = Timer.scheduledTimer(withTimeInterval: 0.08, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
+            }
+        }
+    }
+
+    deinit {
+        timer?.invalidate()
+    }
+
+    private func refresh() {
+        let nextValue = Self.currentRevealKeyPressed()
+        guard revealKeyPressed != nextValue else { return }
+        revealKeyPressed = nextValue
+    }
+
+    private static func currentRevealKeyPressed() -> Bool {
+        !NSEvent.modifierFlags.intersection([.command, .option]).isEmpty
+    }
 }
 
 @MainActor

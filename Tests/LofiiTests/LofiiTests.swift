@@ -152,3 +152,64 @@ func crtResolvedOverscanGrowsWithCurvature() throws {
     let oStrong = CRTStageViewportShaping.resolvedOverscan(curvationFactor: strong, presetOverscan: preset)
     #expect(oStrong + 1e-9 >= oSubtle)
 }
+
+@Test
+func lofiiResourcesPreferMainBundleWhenReleaseResourcesAreFlattened() throws {
+    let container = try makeTemporaryBundleContainer()
+    defer { try? FileManager.default.removeItem(at: container) }
+
+    let main = try makeBundle(
+        named: "Main.bundle",
+        in: container,
+        resources: ["AppIcon.icns"]
+    )
+
+    let resolved = LofiiResources.resolveBundle(main: main)
+
+    #expect(resolved.bundleURL.standardizedFileURL == main.bundleURL.standardizedFileURL)
+}
+
+@Test
+func lofiiResourcesFindSwiftPMBundleWithoutCallingBundleModule() throws {
+    let container = try makeTemporaryBundleContainer()
+    defer { try? FileManager.default.removeItem(at: container) }
+
+    let main = try makeBundle(named: "Main.bundle", in: container)
+    let swiftPM = try makeBundle(
+        named: "lofii_lofii.bundle",
+        in: container,
+        resources: ["AppIcon.icns"]
+    )
+
+    let resolved = LofiiResources.resolveBundle(main: main)
+
+    #expect(resolved.bundleURL.standardizedFileURL == swiftPM.bundleURL.standardizedFileURL)
+}
+
+private func makeTemporaryBundleContainer() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lofii-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
+}
+
+private func makeBundle(
+    named name: String,
+    in container: URL,
+    resources: [String] = []
+) throws -> Bundle {
+    let root = container.appendingPathComponent(name, isDirectory: true)
+    let resourcesRoot = root.appendingPathComponent("Contents/Resources", isDirectory: true)
+    try FileManager.default.createDirectory(at: resourcesRoot, withIntermediateDirectories: true)
+
+    for resource in resources {
+        let url = resourcesRoot.appendingPathComponent(resource)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try Data("test".utf8).write(to: url)
+    }
+
+    return try #require(Bundle(url: root))
+}

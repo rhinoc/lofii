@@ -1,5 +1,6 @@
 import AppKit
 @preconcurrency import AVFoundation
+import CoreGraphics
 import CoreVideo
 import SwiftUI
 import MetalKit
@@ -23,6 +24,7 @@ struct BongoView: View {
             isPlaying: isPlaying,
             pack: model.bongoCatPack,
             inputTickRate: model.bongoInputTickRate,
+            mouseCursorSpace: model.bongoMouseCursorSpace,
             artworkScrollWheel: artworkScrollWheel,
             artworkContextMenu: artworkContextMenu
         )
@@ -36,6 +38,7 @@ private struct BongoUnifiedStage: View {
     let isPlaying: Bool
     let pack: BongoCatPack
     let inputTickRate: BongoInputTickRate
+    let mouseCursorSpace: BongoMouseCursorSpace
     let artworkScrollWheel: ((Double) -> Void)?
     let artworkContextMenu: (() -> NSMenu)?
 
@@ -53,16 +56,22 @@ private struct BongoUnifiedStage: View {
         isPlaying: Bool,
         pack: BongoCatPack,
         inputTickRate: BongoInputTickRate,
+        mouseCursorSpace: BongoMouseCursorSpace,
         artworkScrollWheel: ((Double) -> Void)? = nil,
         artworkContextMenu: (() -> NSMenu)? = nil
     ) {
         self.isPlaying = isPlaying
         self.pack = pack
         self.inputTickRate = inputTickRate
+        self.mouseCursorSpace = mouseCursorSpace
         self.artworkScrollWheel = artworkScrollWheel
         self.artworkContextMenu = artworkContextMenu
         _coordinator = StateObject(
-            wrappedValue: BongoCoordinator(pack: pack, inputTickInterval: inputTickRate.timeInterval)
+            wrappedValue: BongoCoordinator(
+                pack: pack,
+                inputTickInterval: inputTickRate.timeInterval,
+                mouseCursorSpace: mouseCursorSpace
+            )
         )
     }
 
@@ -242,6 +251,9 @@ private struct BongoUnifiedStage: View {
         }
         .onChange(of: model.bongoInputTickRate) { _, rate in
             coordinator.applyInputTickRate(rate)
+        }
+        .onChange(of: model.bongoMouseCursorSpace) { _, space in
+            coordinator.applyMouseCursorSpace(space)
         }
     }
 
@@ -1890,14 +1902,21 @@ final class BongoCoordinator: ObservableObject {
     /// Repeating timer: mouse reconciliation + cursor ratios, then batched Live2D params.
     private var inputTickTimer: Timer?
     private var inputTickInterval: TimeInterval
+    /// How pointer position maps to `ParamMouseX` / `ParamMouseY` (single display vs full desktop).
+    private var mouseCursorSpace: BongoMouseCursorSpace
     /// Rare random motions while the overlay is “live” (monitor running); long random delays between fires.
     private var randomIdleMotionTimer: Timer?
 
     var bongoModelIsReady: Bool { isNativeReady || isModelLoaded }
     var isNativeReady: Bool { nativeRenderer?.isCubismReady ?? false }
 
-    init(pack: BongoCatPack, inputTickInterval: TimeInterval = 1.0 / 60.0) {
+    init(
+        pack: BongoCatPack,
+        inputTickInterval: TimeInterval = 1.0 / 60.0,
+        mouseCursorSpace: BongoMouseCursorSpace = .allDisplays
+    ) {
         self.inputTickInterval = max(1.0 / 120.0, min(inputTickInterval, 0.5))
+        self.mouseCursorSpace = mouseCursorSpace
         supportedKeyImages = Self.loadSupportedKeyImages(for: pack)
         parameterRemap = Self.loadParameterRemap(for: pack)
         arrowOverlayAccessoryParamByStem = Self.loadArrowOverlayAccessoryMap(for: pack)
@@ -2003,6 +2022,11 @@ final class BongoCoordinator: ObservableObject {
         startInputTickTimer()
     }
 
+    func applyMouseCursorSpace(_ space: BongoMouseCursorSpace) {
+        guard mouseCursorSpace != space else { return }
+        mouseCursorSpace = space
+    }
+
     func tearDown() {
         stopMonitor()
         pendingParamValues.removeAll(keepingCapacity: false)
@@ -2106,14 +2130,73 @@ final class BongoCoordinator: ObservableObject {
         guard isNativeReady else { return }
 
         let pos = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(pos) } ?? NSScreen.main
-        guard let frame = screen?.frame, frame.width > 0, frame.height > 0 else { return }
+        switch mouseCursorSpace {
+        case .allDisplays:
+            guard let desktop = Self.unifiedDesktopFrame(), desktop.width > 0, desktop.height > 0 else { return }
+            let xRatio = max(0.0, min(1.0, (pos.x - desktop.minX) / desktop.width))
+            let yRatio = max(0.0, min(1.0, 1.0 - ((pos.y - desktop.minY) / desktop.height)))
+            nativeRenderer?.applyMouseCursorXRatio(Double(xRatio), yRatio: Double(yRatio), mouseMirror: false)
+        case .currentDisplay:
+            guard let screen = Self.screenForGlobalMouseLocation(pos),
+                  screen.frame.width > 0, screen.frame.height > 0
+            else { return }
+            let frame = screen.frame
+            let xRatio = max(0.0, min(1.0, (pos.x - frame.minX) / frame.width))
+            // AppKit screen coordinates are bottom-left; upstream BongoCat maps
+            // mouse input in top-left monitor coordinates.
+            let yRatio = max(0.0, min(1.0, 1.0 - ((pos.y - frame.minY) / frame.height)))
+            nativeRenderer?.applyMouseCursorXRatio(Double(xRatio), yRatio: Double(yRatio), mouseMirror: false)
+        }
+    }
 
-        let xRatio = max(0.0, min(1.0, (pos.x - frame.minX) / frame.width))
-        // AppKit screen coordinates are bottom-left; upstream BongoCat maps
-        // mouse input in top-left monitor coordinates.
-        let yRatio = max(0.0, min(1.0, 1.0 - ((pos.y - frame.minY) / frame.height)))
-        nativeRenderer?.applyMouseCursorXRatio(Double(xRatio), yRatio: Double(yRatio), mouseMirror: false)
+    /// Bounding box of every online display in global desktop coords (`NSEvent.mouseLocation` space).
+    private static func unifiedDesktopFrame() -> CGRect? {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return NSScreen.main?.frame }
+        return screens.reduce(CGRect.null) { $0.union($1.frame) }
+    }
+
+    /// Display under the cursor for per-screen normalization (`BongoMouseCursorSpace.currentDisplay`).
+    private static func screenForGlobalMouseLocation(_ location: NSPoint) -> NSScreen? {
+        var displays = [CGDirectDisplayID](repeating: 0, count: 1)
+        var displayCount: UInt32 = 0
+        let cgPoint = CGPoint(x: location.x, y: location.y)
+        if CGGetDisplaysWithPoint(cgPoint, 1, &displays, &displayCount) == .success, displayCount > 0 {
+            let id = displays[0]
+            if let match = NSScreen.screens.first(where: { screenDirectDisplayID($0) == id }) {
+                return match
+            }
+        }
+        if let match = NSScreen.screens.first(where: { $0.frame.contains(location) }) {
+            return match
+        }
+        return nearestScreen(to: location) ?? NSScreen.main
+    }
+
+    private static func screenDirectDisplayID(_ screen: NSScreen) -> CGDirectDisplayID? {
+        guard let num = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber
+        else { return nil }
+        return CGDirectDisplayID(num.uint32Value)
+    }
+
+    private static func nearestScreen(to location: NSPoint) -> NSScreen? {
+        let screens = NSScreen.screens
+        guard !screens.isEmpty else { return nil }
+        return screens.min {
+            squaredDistance(from: location, to: $0.frame) < squaredDistance(from: location, to: $1.frame)
+        }
+    }
+
+    private static func squaredDistance(from point: NSPoint, to rect: CGRect) -> CGFloat {
+        let dx: CGFloat
+        if point.x < rect.minX { dx = rect.minX - point.x }
+        else if point.x > rect.maxX { dx = point.x - rect.maxX }
+        else { dx = 0 }
+        let dy: CGFloat
+        if point.y < rect.minY { dy = rect.minY - point.y }
+        else if point.y > rect.maxY { dy = point.y - rect.maxY }
+        else { dy = 0 }
+        return dx * dx + dy * dy
     }
 
     private func flushPendingParams() {

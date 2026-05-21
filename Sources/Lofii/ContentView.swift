@@ -2099,6 +2099,18 @@ private struct SettingsOverlay: View {
                 textSize: textSize
             )
 
+            SettingsChoiceRow(
+                title: "Mouse Space",
+                choices: BongoMouseCursorSpace.allCases,
+                selection: binding(
+                    get: { model.bongoMouseCursorSpace },
+                    set: { model.bongoMouseCursorSpace = $0 }
+                ),
+                label: { $0.menuLabel },
+                accent: model.accent,
+                textSize: textSize
+            )
+
             SettingsToggleRow(
                 title: "Desktop",
                 isOn: binding(
@@ -3116,6 +3128,22 @@ enum SettingsContextMenu {
         bongoInputRateItem.submenu = bongoInputRateMenu
         bongoMenu.addItem(bongoInputRateItem)
 
+        let bongoMouseSpaceItem = NSMenuItem(title: "Mouse Space", action: nil, keyEquivalent: "")
+        let bongoMouseSpaceMenu = NSMenu()
+        for space in BongoMouseCursorSpace.allCases {
+            let item = NSMenuItem(
+                title: space.menuLabel,
+                action: #selector(MenuTarget.selectBongoMouseCursorSpace(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = space.rawValue
+            item.state = (model.bongoMouseCursorSpace == space) ? .on : .off
+            item.target = MenuTarget.shared
+            bongoMouseSpaceMenu.addItem(item)
+        }
+        bongoMouseSpaceItem.submenu = bongoMouseSpaceMenu
+        bongoMenu.addItem(bongoMouseSpaceItem)
+
         bongoMenu.addItem(.separator())
 
         let desktopItem = NSMenuItem(title: "Desktop", action: nil, keyEquivalent: "")
@@ -3540,6 +3568,14 @@ final class MenuTarget: NSObject {
               let model
         else { return }
         model.bongoInputTickRate = rate
+    }
+
+    @objc func selectBongoMouseCursorSpace(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let space = BongoMouseCursorSpace(rawValue: raw),
+              let model
+        else { return }
+        model.bongoMouseCursorSpace = space
     }
 
     @objc func selectBongoDesktopTint(_ sender: NSMenuItem) {

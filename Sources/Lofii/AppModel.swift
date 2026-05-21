@@ -712,6 +712,23 @@ enum BongoInputTickRate: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+/// How Live2D `ParamMouseX` / `ParamMouseY` are normalized from the system pointer.
+enum BongoMouseCursorSpace: String, CaseIterable, Identifiable, Codable, Sendable {
+    /// 0…1 within the display that currently contains the cursor (multi-monitor friendly).
+    case currentDisplay
+    /// 0…1 across the bounding box of every `NSScreen` (whole virtual desktop).
+    case allDisplays
+
+    var id: String { rawValue }
+
+    var menuLabel: String {
+        switch self {
+        case .currentDisplay: return "Current display"
+        case .allDisplays: return "All displays"
+        }
+    }
+}
+
 extension BongoCatModelKind {
     /// `maxLogicalStageSize` scaled by the user’s size tier (aspect ratio unchanged).
     func maxLogicalStageSize(scaledBy tier: BongoStageScaleTier) -> CGSize {
@@ -788,6 +805,7 @@ final class AppModel: ObservableObject {
     @Published var currentGifIndex: Int = 0 {
         didSet {
             guard currentGifIndex != oldValue else { return }
+            guard visualMode == .gif else { return }
             // Swapping the GIF index only invalidates primary media — Live2D
             // stays mounted, so we must not reset the Bongo layer gate.
             resetVisualStageLoadingGate(updateBongoLayer: false)
@@ -974,6 +992,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published var bongoMouseCursorSpace: BongoMouseCursorSpace = AppModel.loadBongoMouseCursorSpace() {
+        didSet {
+            guard bongoMouseCursorSpace != oldValue else { return }
+            UserDefaults.standard.set(bongoMouseCursorSpace.rawValue, forKey: Self.bongoMouseCursorSpaceKey)
+        }
+    }
+
     private static let badgeSizeKey = "lofii.badgeSize"
     private static let readoutVisibleKey = "lofii.readoutVisible"
     private static let badgePositionKey = "lofii.badgePosition"
@@ -989,6 +1014,7 @@ final class AppModel: ObservableObject {
     private static let bongoStageAnchorKey = "lofii.bongoStageAnchor"
     private static let bongoStageScaleTierKey = "lofii.bongoStageScaleTier"
     private static let bongoInputTickRateKey = "lofii.bongoInputTickRate"
+    private static let bongoMouseCursorSpaceKey = "lofii.bongoMouseCursorSpace"
     private static let selectedPresetIDKey = "lofii.selectedPresetID"
     private static let alwaysOnTopKey = "lofii.alwaysOnTop"
 
@@ -1106,6 +1132,13 @@ final class AppModel: ObservableObject {
         guard let raw = UserDefaults.standard.string(forKey: bongoInputTickRateKey),
               let value = BongoInputTickRate(rawValue: raw)
         else { return .hz30 }
+        return value
+    }
+
+    private static func loadBongoMouseCursorSpace() -> BongoMouseCursorSpace {
+        guard let raw = UserDefaults.standard.string(forKey: bongoMouseCursorSpaceKey),
+              let value = BongoMouseCursorSpace(rawValue: raw)
+        else { return .allDisplays }
         return value
     }
 
@@ -1321,7 +1354,11 @@ final class AppModel: ObservableObject {
 
     func nextGif() {
         guard !gifAssets.isEmpty else { return }
-        currentGifIndex = (currentGifIndex + 1) % gifAssets.count
+        let nextIndex = (currentGifIndex + 1) % gifAssets.count
+        currentGifIndex = nextIndex
+        if visualMode != .gif {
+            visualMode = .gif
+        }
     }
 
     func setWidgetWindowVisible(_ visible: Bool) {

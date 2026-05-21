@@ -30,7 +30,7 @@ fi
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 # Ship the same resource layout as SwiftPM's `lofii_lofii.bundle`, but under `Contents/Resources/`
 # so `LofiiResources.bundle` resolves to `Bundle.main` and codesign does not require an extra bundle at .app root.
-for name in Statics Fonts BongoCat FrameworkMetallibs; do
+for name in Statics Fonts BongoCat ShatteredGlass FrameworkMetallibs; do
   if [[ ! -d "$LOFII_RES/$name" ]]; then
     echo "error: missing $LOFII_RES/$name" >&2
     exit 1
