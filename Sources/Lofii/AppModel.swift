@@ -287,25 +287,25 @@ enum ShatteredGlassStrength: String, CaseIterable, Identifiable, Codable, Sendab
 
     var resolvedOpacity: Double {
         switch self {
-        case .subtle: return 0.42
-        case .balanced: return 0.68
-        case .strong: return 0.95
+        case .subtle: return 0.20
+        case .balanced: return 0.31
+        case .strong: return 0.42
         }
     }
 
     var resolvedRefraction: Double {
         switch self {
-        case .subtle: return 10
-        case .balanced: return 18
-        case .strong: return 28
+        case .subtle: return 4
+        case .balanced: return 7
+        case .strong: return 10
         }
     }
 
     var resolvedHighlight: Double {
         switch self {
-        case .subtle: return 0.28
-        case .balanced: return 0.46
-        case .strong: return 0.68
+        case .subtle: return 0.13
+        case .balanced: return 0.20
+        case .strong: return 0.28
         }
     }
 }

@@ -152,6 +152,7 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         var glassRefractionPixels: Float = 0
         var glassHighlightStrength: Float = 0
         var glassFlipX: Float = 0
+        var glassTextureSize: SIMD2<Float> = .zero
     }
 
     private weak var view: MTKView?
@@ -360,7 +361,11 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
             glassOpacity: Float(shatteredGlassTextures == nil ? 0 : shatteredGlassOpacity),
             glassRefractionPixels: Float(shatteredGlassRefraction),
             glassHighlightStrength: Float(shatteredGlassHighlight),
-            glassFlipX: Float(shatteredGlassFlipX)
+            glassFlipX: Float(shatteredGlassFlipX),
+            glassTextureSize: SIMD2<Float>(
+                Float(shatteredGlassTextures?.background.width ?? 1),
+                Float(shatteredGlassTextures?.background.height ?? 1)
+            )
         )
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<Uniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)

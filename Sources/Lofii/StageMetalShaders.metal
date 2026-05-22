@@ -29,6 +29,7 @@ struct StageUniforms {
     float glassRefractionPixels;
     float glassHighlightStrength;
     float glassFlipX;
+    float2 glassTextureSize;
 };
 
 vertex StageVertexOut stageVertex(uint vertexID [[vertex_id]])
@@ -104,15 +105,20 @@ static float crtApertureDarkness(float2 uv)
     );
 }
 
-static float2 aspectFillSourceUV(float2 viewportUV, constant StageUniforms& uniforms)
+static float2 aspectFillUV(float2 viewportUV, float2 viewportSize, float2 sourceSize)
 {
-    const float2 viewportSize = max(uniforms.viewportSize, float2(1.0));
-    const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
     const float scale = max(viewportSize.x / sourceSize.x, viewportSize.y / sourceSize.y);
     const float2 drawnSize = sourceSize * scale;
     const float2 offset = (viewportSize - drawnSize) * 0.5;
     const float2 sourcePx = (viewportUV * viewportSize - offset) / scale;
     return clamp(sourcePx / sourceSize, 0.0, 1.0);
+}
+
+static float2 aspectFillSourceUV(float2 viewportUV, constant StageUniforms& uniforms)
+{
+    const float2 viewportSize = max(uniforms.viewportSize, float2(1.0));
+    const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
+    return aspectFillUV(viewportUV, viewportSize, sourceSize);
 }
 
 static half4 sampleSource(
@@ -251,7 +257,9 @@ static half4 applyShatteredGlass(
     const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
     const float2 viewportSize = max(uniforms.viewportSize, float2(1.0));
     const float flipX = step(0.5, uniforms.glassFlipX);
-    const float2 glassUV = clamp(float2(mix(viewportUV.x, 1.0 - viewportUV.x, flipX), viewportUV.y), 0.0, 1.0);
+    const float2 glassTextureSize = max(uniforms.glassTextureSize, float2(1.0));
+    const float2 fittedGlassUV = aspectFillUV(viewportUV, viewportSize, glassTextureSize);
+    const float2 glassUV = clamp(float2(mix(fittedGlassUV.x, 1.0 - fittedGlassUV.x, flipX), fittedGlassUV.y), 0.0, 1.0);
     const half4 pattern = glassPatternTexture.sample(sourceSampler, glassUV);
     const half4 glassBackground = glassBackgroundTexture.sample(sourceSampler, glassUV);
 

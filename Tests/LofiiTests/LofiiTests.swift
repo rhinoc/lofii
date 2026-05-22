@@ -184,6 +184,13 @@ func crtResolvedOverscanGrowsWithCurvature() throws {
 }
 
 @Test
+func shatteredGlassHighMatchesPreviousLowPreset() throws {
+    #expect(ShatteredGlassStrength.strong.resolvedOpacity == 0.42)
+    #expect(ShatteredGlassStrength.strong.resolvedRefraction == 10)
+    #expect(ShatteredGlassStrength.strong.resolvedHighlight == 0.28)
+}
+
+@Test
 func lofiiResourcesPreferMainBundleWhenReleaseResourcesAreFlattened() throws {
     let container = try makeTemporaryBundleContainer()
     defer { try? FileManager.default.removeItem(at: container) }

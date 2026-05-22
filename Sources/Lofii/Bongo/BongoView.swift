@@ -461,9 +461,12 @@ private final class BongoStageMTKView: MTKView {
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
-        if let stageContainsPoint, !stageContainsPoint(point) {
-            return nil
-        }
+        // The SwiftUI wheel/context catcher only passes primary clicks through
+        // over the fitted Live2D stage rectangle. That rectangle is larger than
+        // the visible model, so keep receiving those clicks and decide in
+        // `mouseDown`: model pixels move the model; empty stage space drags the
+        // window. Returning nil here drops the event onto non-draggable Metal
+        // background views.
         return super.hitTest(point)
     }
 
@@ -477,9 +480,9 @@ private final class BongoStageMTKView: MTKView {
     }
 
     override func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
         guard event.buttonNumber == 0 else {
             pendingStageInteraction = nil
+            super.mouseDown(with: event)
             return
         }
         let p = convert(event.locationInWindow, from: nil)
@@ -488,6 +491,7 @@ private final class BongoStageMTKView: MTKView {
             pendingStageInteraction = (p, event.timestamp, false)
         } else {
             pendingStageInteraction = nil
+            window?.performDrag(with: event)
         }
     }
 
@@ -667,6 +671,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         var glassRefractionPixels: Float = 0
         var glassHighlightStrength: Float = 0
         var glassFlipX: Float = 0
+        var glassTextureSize: SIMD2<Float> = .zero
     }
 
     private struct QuadUniforms {
@@ -1211,7 +1216,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             glassOpacity: effectsEnabled && shatteredGlassTextures != nil ? Float(shatteredGlassOpacity) : 0,
             glassRefractionPixels: Float(shatteredGlassRefraction),
             glassHighlightStrength: Float(shatteredGlassHighlight),
-            glassFlipX: Float(shatteredGlassFlipX)
+            glassFlipX: Float(shatteredGlassFlipX),
+            glassTextureSize: SIMD2<Float>(
+                Float(shatteredGlassTextures?.background.width ?? 1),
+                Float(shatteredGlassTextures?.background.height ?? 1)
+            )
         )
     }
 

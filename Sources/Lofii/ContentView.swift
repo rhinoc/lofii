@@ -398,6 +398,7 @@ struct WidgetRootView: View {
                         ? "wheelAndContextCatch"
                         : "wheelCatch"
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(true)
 
                 // TrackBadge is always visible now (no background card, just
@@ -850,6 +851,7 @@ private struct TrackBadge: View {
         let placement = position.horizontalPlacement
         let innerInsets = badgeInnerInsets(compact: compact, placement: placement)
         let waveformSlotH = 14 * scale
+        let coverSide = max(28, 38 * scale)
         let marqueeDebugStretch = model.debugModeEnabled
 
         VStack(spacing: 1) {
@@ -912,29 +914,16 @@ private struct TrackBadge: View {
             .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
 
             if let track = model.currentTrack {
-                MarqueePixelText(
-                    text: marqueeStretchForDebug(track.title, enabled: marqueeDebugStretch),
-                    size: 18 * scale,
-                    kerning: 0.4,
-                    color: .white,
-                    glowColor: .white,
-                    glowEnabled: glowEnabled,
-                    shadowEnabled: shadowEnabled,
-                    placement: placement,
-                    scrollingEnabled: isVisible
-                )
-
-                MarqueePixelText(
-                    text: marqueeStretchForDebug(track.artists, enabled: marqueeDebugStretch),
-                    size: 14 * scale,
-                    kerning: 0.3,
-                    color: .white.opacity(0.78),
-                    glowColor: .white,
-                    glowEnabled: glowEnabled,
-                    shadowEnabled: shadowEnabled,
-                    placement: placement,
-                    scrollingEnabled: isVisible
-                )
+                HStack(alignment: .center, spacing: 8 * scale) {
+                    if placement == .trailing {
+                        trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
+                        TrackCoverThumbnail(url: track.image, side: coverSide)
+                    } else {
+                        TrackCoverThumbnail(url: track.image, side: coverSide)
+                        trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
             } else {
                 GlowingPixelText(
                     text: model.streamStatus,
@@ -954,6 +943,86 @@ private struct TrackBadge: View {
         .frame(width: width)
         .padding(.horizontal, ReadoutGlowBleed.horizontal)
         .padding(.vertical, ReadoutGlowBleed.vertical)
+    }
+
+    private func trackText(
+        track: LiveTrack,
+        placement: BadgeHorizontalPlacement,
+        marqueeDebugStretch: Bool
+    ) -> some View {
+        let scale = model.badgeSize.scale
+        let glowEnabled = model.readoutFontSettings.textGlow
+        let shadowEnabled = model.readoutFontSettings.textShadow
+
+        return VStack(spacing: 0) {
+            MarqueePixelText(
+                text: marqueeStretchForDebug(track.title, enabled: marqueeDebugStretch),
+                size: 18 * scale,
+                kerning: 0.4,
+                color: .white,
+                glowColor: .white,
+                glowEnabled: glowEnabled,
+                shadowEnabled: shadowEnabled,
+                placement: placement,
+                scrollingEnabled: isVisible
+            )
+
+            MarqueePixelText(
+                text: marqueeStretchForDebug(track.artists, enabled: marqueeDebugStretch),
+                size: 14 * scale,
+                kerning: 0.3,
+                color: .white.opacity(0.78),
+                glowColor: .white,
+                glowEnabled: glowEnabled,
+                shadowEnabled: shadowEnabled,
+                placement: placement,
+                scrollingEnabled: isVisible
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
+    }
+}
+
+private struct TrackCoverThumbnail: View {
+    let url: URL?
+    let side: CGFloat
+
+    var body: some View {
+        Group {
+            if let url {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .empty:
+                        Color.white.opacity(0.10)
+                    case .failure:
+                        placeholder
+                    @unknown default:
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .frame(width: side, height: side)
+        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.black.opacity(0.35)
+            PixelIcon(.musicNote, size: max(14, side * 0.42))
+                .foregroundStyle(.white.opacity(0.62))
+        }
     }
 }
 
@@ -2909,6 +2978,14 @@ private struct WheelAndContextCatcher: NSViewRepresentable {
 
         override var acceptsFirstResponder: Bool { true }
         override var mouseDownCanMoveWindow: Bool { true }
+
+        override func mouseDown(with event: NSEvent) {
+            guard event.buttonNumber == 0 else {
+                super.mouseDown(with: event)
+                return
+            }
+            window?.performDrag(with: event)
+        }
 
         // AppKit's default `menu(for:)` returns the view's `menu`
         // property, but that captures the menu at construction time.
