@@ -63,6 +63,7 @@ enum PixelGlyph: String {
     // Visual mode
     case movie       = "\u{eb65}"
     case gif         = "\u{eaf5}"
+    case imageFrame  = "\u{eb12}" // image-frame
     case shuffle     = "\u{eba2}"
 
     // Variant (day/night/rain)

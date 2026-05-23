@@ -5,6 +5,7 @@ import SwiftUI
 enum VisualMode: String, CaseIterable, Identifiable, Sendable {
     case cinematic
     case gif
+    case cover
 
     var id: String { rawValue }
 
@@ -12,6 +13,7 @@ enum VisualMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .cinematic: return "Cinematic"
         case .gif:       return "lofii GIF"
+        case .cover:     return "Track Cover"
         }
     }
 
@@ -19,6 +21,7 @@ enum VisualMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .cinematic: return .movie
         case .gif:       return .gif
+        case .cover:     return .imageFrame
         }
     }
 }
@@ -509,6 +512,15 @@ enum ReadoutFontSlant: String, CaseIterable, Identifiable, Codable, Sendable {
 }
 
 struct ReadoutFontSettings: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case weight
+        case elementShape
+        case slant
+        case waveform
+        case textShadow
+        case textGlow
+    }
+
     var weight: ReadoutFontWeight = .medium
     var elementShape: ReadoutFontElementShape = .square
     var slant: ReadoutFontSlant = .upright
@@ -518,6 +530,18 @@ struct ReadoutFontSettings: Codable, Equatable, Sendable {
     var textShadow: Bool = true
     /// Colored bloom on readout text and waveform.
     var textGlow: Bool = true
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        weight = (try? container.decodeIfPresent(ReadoutFontWeight.self, forKey: .weight)) ?? .medium
+        elementShape = (try? container.decodeIfPresent(ReadoutFontElementShape.self, forKey: .elementShape)) ?? .square
+        slant = (try? container.decodeIfPresent(ReadoutFontSlant.self, forKey: .slant)) ?? .upright
+        waveform = (try? container.decodeIfPresent(Bool.self, forKey: .waveform)) ?? true
+        textShadow = (try? container.decodeIfPresent(Bool.self, forKey: .textShadow)) ?? true
+        textGlow = (try? container.decodeIfPresent(Bool.self, forKey: .textGlow)) ?? true
+    }
 }
 
 /// Desktop fill under the Bongo cut line (native mask polygon).
@@ -808,7 +832,7 @@ final class AppModel: ObservableObject {
         didSet {
             guard visualMode != oldValue else { return }
             UserDefaults.standard.set(visualMode.rawValue, forKey: Self.visualModeKey)
-            if visualMode == .gif {
+            if visualMode == .gif || visualMode == .cover {
                 Task { await GifCache.shared.prefetchStatics() }
                 resetVisualStageLoadingGate(updateBongoLayer: false)
             } else if visualMode == .cinematic {
@@ -865,7 +889,7 @@ final class AppModel: ObservableObject {
     private var bongoLive2DReady: Bool = true
 
     private func refreshVisualStageReady() {
-        let tracksLoading = bongoOverlayVisible || visualMode == .gif
+        let tracksLoading = bongoOverlayVisible || visualMode == .gif || visualMode == .cover
         let nextReady: Bool
         if !tracksLoading {
             nextReady = true
@@ -925,6 +949,9 @@ final class AppModel: ObservableObject {
     @Published var currentTrack: LiveTrack? {
         didSet {
             refreshSystemMediaControls()
+            if visualMode == .cover, currentTrack?.image != oldValue?.image {
+                resetVisualStageLoadingGate(updateBongoLayer: false)
+            }
         }
     }
     @Published var streamStatus = "Connecting…"

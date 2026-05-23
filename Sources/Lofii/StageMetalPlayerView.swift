@@ -8,6 +8,7 @@ import SwiftUI
 enum StageMetalSource: Equatable {
     case video(URL)
     case gif(URL)
+    case image(URL)
 }
 
 struct StageMetalPlayerView: NSViewRepresentable {
@@ -199,6 +200,8 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
     private var currentGifSize: CGSize = .zero
     private var gifFrameIndex = 0
     private var nextGifFrameTime: CFTimeInterval = 0
+    private var currentImageTexture: MTLTexture?
+    private var currentImageSize: CGSize = .zero
 
     func attach(to view: MTKView) {
         let metalDevice = MTLCreateSystemDefaultDevice()
@@ -412,6 +415,8 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         currentGifSize = .zero
         gifFrameIndex = 0
         nextGifFrameTime = 0
+        currentImageTexture = nil
+        currentImageSize = .zero
         deliveredFirstFrame = false
 
         switch source {
@@ -419,6 +424,8 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
             configureVideo(url: url)
         case .gif(let url):
             configureGif(url: url)
+        case .image(let url):
+            configureImage(url: url)
         }
         applyPlaybackState()
     }
@@ -442,6 +449,7 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         gifCache = nil
         gifTextureFrameCache.clear()
         currentGifTexture = nil
+        currentImageTexture = nil
     }
 
     private func notifyFirstFrameReadyIfNeeded(texture: MTLTexture?) {
@@ -489,6 +497,24 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         notifyFirstFrameReadyIfNeeded(texture: currentGifTexture)
     }
 
+    private func configureImage(url: URL) {
+        guard let textureLoader else { return }
+        do {
+            let texture = try textureLoader.newTexture(
+                URL: url,
+                options: [
+                    MTKTextureLoader.Option.SRGB: false,
+                    MTKTextureLoader.Option.origin: MTKTextureLoader.Origin.topLeft,
+                ]
+            )
+            currentImageTexture = texture
+            currentImageSize = CGSize(width: texture.width, height: texture.height)
+            notifyFirstFrameReadyIfNeeded(texture: texture)
+        } catch {
+            print("[StageMetal] failed to load image texture: \(error)")
+        }
+    }
+
     private func applyPlaybackState() {
         guard case .video = source else { return }
         if isPlaying {
@@ -518,6 +544,8 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         case .gif:
             updateGifTexture()
             return (currentGifTexture, currentGifSize)
+        case .image:
+            return (currentImageTexture, currentImageSize)
         case nil:
             return (nil, .zero)
         }

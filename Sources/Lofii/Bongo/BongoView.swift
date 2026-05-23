@@ -81,6 +81,8 @@ private struct BongoUnifiedStage: View {
             "\(model.currentScene.id)/\(model.currentVariant.rawValue)"
         case .gif:
             model.currentGif?.id ?? ""
+        case .cover:
+            model.currentTrack?.image?.absoluteString ?? "no-cover"
         }
     }
 
@@ -117,6 +119,12 @@ private struct BongoUnifiedStage: View {
             guard let disk = GifCache.cachedURLIfAvailable(for: asset),
                   localURL == disk else { return false }
             return true
+        case .cover:
+            guard let artworkURL = model.currentTrack?.image else { return false }
+            guard lastSettledAssetId == artworkURL.absoluteString else { return false }
+            guard let disk = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL),
+                  localURL == disk else { return false }
+            return true
         }
     }
 
@@ -127,6 +135,8 @@ private struct BongoUnifiedStage: View {
             return .video(localURL)
         case .gif:
             return .gif(localURL)
+        case .cover:
+            return .image(localURL)
         }
     }
 
@@ -235,6 +245,8 @@ private struct BongoUnifiedStage: View {
                 await loadGif()
             case .cinematic:
                 await loadCinematicVideo()
+            case .cover:
+                await loadCoverArtwork()
             }
         }
         .onAppear {
@@ -267,6 +279,8 @@ private struct BongoUnifiedStage: View {
             return "\(model.currentGif?.id ?? "gif")-\(pack.cacheTag)-\(tok)"
         case .video:
             return "\(model.currentScene.id)-\(model.currentVariant.rawValue)-\(pack.cacheTag)-\(tok)"
+        case .image(let url):
+            return "\(url.absoluteString)-\(pack.cacheTag)-\(tok)"
         }
     }
 
@@ -438,6 +452,79 @@ private struct BongoUnifiedStage: View {
             resetSnowOpacity: { transitionSnowOpacity = 1 }
         )
         lastSettledVideoKey = cacheKey
+    }
+
+    @MainActor
+    private func loadCoverArtwork() async {
+        guard let artworkURL = model.currentTrack?.image else {
+            localURL = nil
+            lastSettledAssetId = nil
+            loadError = nil
+            settledLoadSessionKey = loadSessionKey
+            model.markPrimaryVisualMediaReady()
+            return
+        }
+
+        loadError = nil
+        let diskCached = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL)
+
+        if let diskCached,
+           localURL == diskCached,
+           lastSettledAssetId == artworkURL.absoluteString,
+           transitionSnowURL == nil {
+            darkFieldOpacity = 0
+            transitionSnowOpacity = 1
+            transitionSnowURL = nil
+            settledLoadSessionKey = loadSessionKey
+            model.markPrimaryVisualMediaReady()
+            return
+        }
+
+        let keyChanged = lastSettledAssetId != nil && lastSettledAssetId != artworkURL.absoluteString
+        if let snow = await GifCache.shared.randomCachedStatic() {
+            transitionSnowURL = snow
+        } else if transitionSnowURL == nil {
+            transitionSnowURL = GifCache.bundledSnowOverlayURL()
+        }
+        TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
+
+        do {
+            let url = try await TrackArtworkCache.ensureLocal(for: artworkURL)
+            guard !Task.isCancelled else { return }
+            localURL = url
+            lastSettledAssetId = artworkURL.absoluteString
+            loadError = nil
+            settledLoadSessionKey = loadSessionKey
+            model.markPrimaryVisualMediaReady()
+        } catch {
+            guard !Task.isCancelled else { return }
+            localURL = diskCached
+            lastSettledAssetId = artworkURL.absoluteString
+            loadError = diskCached == nil ? "Cover unavailable" : nil
+            if diskCached != nil {
+                settledLoadSessionKey = loadSessionKey
+            }
+            model.markPrimaryVisualMediaReady()
+        }
+
+        guard !Task.isCancelled, loadError == nil else {
+            darkFieldOpacity = 0
+            transitionSnowOpacity = 1
+            transitionSnowURL = nil
+            return
+        }
+
+        if keyChanged {
+            try? await Task.sleep(
+                nanoseconds: UInt64(TransitionSnowStyle.plateauAfterContentChange * 1_000_000_000)
+            )
+        }
+        guard !Task.isCancelled else { return }
+        await TransitionSnowStyle.darkFieldCoverThenClearSnow(
+            setDarkField: { darkFieldOpacity = $0 },
+            clearSnowURL: { transitionSnowURL = nil },
+            resetSnowOpacity: { transitionSnowOpacity = 1 }
+        )
     }
 }
 
@@ -736,6 +823,8 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var currentGifSize: CGSize = .zero
     private var gifFrameIndex = 0
     private var nextGifFrameTime: CFTimeInterval = 0
+    private var currentImageTexture: MTLTexture?
+    private var currentImageSize: CGSize = .zero
 
     private var player: AVPlayer?
     private var videoOutput: AVPlayerItemVideoOutput?
@@ -794,6 +883,9 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         buildPipelines(device: metalDevice, pixelFormat: view.colorPixelFormat)
         _ = bongoCoordinator.ensureNativeRenderer(device: metalDevice)
         bongoCoordinator.ensureModelReadyFromNative(workspaceReady: onLive2DWorkspaceReady)
+        if let backgroundSource, case .image = backgroundSource {
+            configureBackground(backgroundSource)
+        }
     }
 
     func update(
@@ -1363,12 +1455,16 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         currentGifSize = .zero
         gifFrameIndex = 0
         nextGifFrameTime = 0
+        currentImageTexture = nil
+        currentImageSize = .zero
 
         switch source {
         case .video(let url):
             configureVideo(url: url)
         case .gif(let url):
             configureGif(url: url)
+        case .image(let url):
+            configureImage(url: url)
         }
     }
 
@@ -1391,6 +1487,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         gifCache = nil
         gifTextureFrameCache.clear()
         currentGifTexture = nil
+        currentImageTexture = nil
     }
 
     private func configureVideo(url: URL) {
@@ -1430,6 +1527,27 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         uploadGifFrame(at: 0)
     }
 
+    private func configureImage(url: URL) {
+        guard let textureLoader else { return }
+        do {
+            let texture = try textureLoader.newTexture(
+                URL: url,
+                options: [
+                    MTKTextureLoader.Option.SRGB: false,
+                    MTKTextureLoader.Option.origin: MTKTextureLoader.Origin.topLeft,
+                ]
+            )
+            currentImageTexture = texture
+            currentImageSize = CGSize(width: texture.width, height: texture.height)
+            if let image = NSImage(contentsOf: url),
+               let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+                captureDynamicDesktopColorIfNeeded(from: cgImage)
+            }
+        } catch {
+            print("[BongoUnifiedMetal] failed to load image texture: \(error)")
+        }
+    }
+
     private func applyPlaybackStateForVideo() {
         guard case .video = backgroundSource else { return }
         if isPlaying {
@@ -1455,6 +1573,8 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         case .gif:
             updateGifTexture()
             return (currentGifTexture, currentGifSize)
+        case .image:
+            return (currentImageTexture, currentImageSize)
         case nil:
             return (nil, .zero)
         }

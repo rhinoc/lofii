@@ -284,6 +284,33 @@ struct WidgetRootView: View {
                                         shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX
                                     )
                                 }
+                            case .cover:
+                                if bongoVisible {
+                                    Color(white: 0.02)
+                                } else {
+                                    TrackCoverSceneView(
+                                        track: model.currentTrack,
+                                        curvationFactor: backgroundCurvationUniforms.factor,
+                                        curvationOverscan: backgroundCurvationUniforms.overscan,
+                                        curvationBorderSize: backgroundCurvationUniforms.border,
+                                        vignetteAlpha: backgroundVignetteAlpha,
+                                        motionBlurEnabled: backgroundMotionBlurEnabled,
+                                        motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
+                                        chromaticAberrationEnabled: backgroundChromaticAberrationEnabled,
+                                        chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
+                                        scanlinesEnabled: backgroundScanlinesEnabled,
+                                        scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
+                                        scanlineDensity: model.crt.scanlineDensity.pitch,
+                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
+                                        shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
+                                        onCoverReady: {
+                                            model.markPrimaryVisualMediaReady()
+                                        }
+                                    )
+                                    .environmentObject(model)
+                                }
                             }
                         }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -300,7 +327,7 @@ struct WidgetRootView: View {
                         }
 
                         if !model.visualStageReady,
-                           model.bongoOverlayVisible || model.visualMode == .gif {
+                           model.bongoOverlayVisible || model.visualMode == .gif || model.visualMode == .cover {
                             WorkspaceSnowLoadingCover()
                         }
 
@@ -832,6 +859,126 @@ private func marqueeStretchForDebug(_ raw: String, enabled: Bool) -> String {
     return String(repeating: raw + " · ", count: 28) + " ⟦DEBUG⟧"
 }
 
+private struct TrackCoverSceneView: View {
+    @EnvironmentObject private var model: AppModel
+    let track: LiveTrack?
+    let curvationFactor: Double
+    let curvationOverscan: Double
+    let curvationBorderSize: Double
+    let vignetteAlpha: Double
+    let motionBlurEnabled: Bool
+    let motionBlurStrength: Double
+    let chromaticAberrationEnabled: Bool
+    let chromaticAberrationStrength: Double
+    let scanlinesEnabled: Bool
+    let scanlineOpacity: Double
+    let scanlineDensity: Double
+    let shatteredGlassOpacity: Double
+    let shatteredGlassRefraction: Double
+    let shatteredGlassHighlight: Double
+    let shatteredGlassFlipX: Double
+    let onCoverReady: (@MainActor () -> Void)?
+
+    @State private var localURL: URL?
+    @State private var loadError: String?
+    @State private var firstFrameReadyURL: URL?
+
+    private var artworkKey: String {
+        track?.image?.absoluteString ?? "no-cover"
+    }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(white: 0.035), Color(white: 0.11)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            if let localURL {
+                StageMetalPlayerView(
+                    source: .image(localURL),
+                    isPlaying: true,
+                    curvationFactor: curvationFactor,
+                    curvationOverscan: curvationOverscan,
+                    curvationBorderSize: curvationBorderSize,
+                    vignetteAlpha: vignetteAlpha,
+                    motionBlurEnabled: motionBlurEnabled,
+                    motionBlurStrength: motionBlurStrength,
+                    chromaticAberrationEnabled: chromaticAberrationEnabled,
+                    chromaticAberrationStrength: chromaticAberrationStrength,
+                    scanlinesEnabled: scanlinesEnabled,
+                    scanlineOpacity: scanlineOpacity,
+                    scanlineDensity: scanlineDensity,
+                    shatteredGlassOpacity: shatteredGlassOpacity,
+                    shatteredGlassRefraction: shatteredGlassRefraction,
+                    shatteredGlassHighlight: shatteredGlassHighlight,
+                    shatteredGlassFlipX: shatteredGlassFlipX,
+                    onFirstFrameReady: {
+                        markCoverReady(for: localURL)
+                    }
+                )
+                .id(localURL)
+            } else {
+                PixelIcon(.imageFrame, size: 44)
+                    .foregroundStyle(.white.opacity(0.28))
+                    .shadow(color: .black.opacity(0.45), radius: 2, y: 1)
+            }
+
+            if let loadError {
+                VStack(spacing: 4) {
+                    PixelIcon(.signalOff, size: 16)
+                    Text(loadError)
+                        .font(.pixel(size: 11))
+                        .multilineTextAlignment(.center)
+                }
+                .foregroundStyle(.white.opacity(0.8))
+                .padding(10)
+                .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: WidgetChromeMetrics.contentCornerRadius))
+            }
+        }
+        .task(id: artworkKey) {
+            await loadCover()
+        }
+    }
+
+    @MainActor
+    private func markCoverReady(for url: URL) {
+        guard firstFrameReadyURL != url else { return }
+        firstFrameReadyURL = url
+        onCoverReady?()
+    }
+
+    @MainActor
+    private func loadCover() async {
+        model.resetVisualStageLoadingGate(updateBongoLayer: false)
+        guard let artworkURL = track?.image else {
+            localURL = nil
+            loadError = nil
+            onCoverReady?()
+            return
+        }
+
+        loadError = nil
+        if let cached = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL) {
+            localURL = cached
+            return
+        }
+
+        do {
+            let url = try await TrackArtworkCache.ensureLocal(for: artworkURL)
+            guard !Task.isCancelled else { return }
+            localURL = url
+            loadError = nil
+        } catch {
+            guard !Task.isCancelled else { return }
+            localURL = nil
+            loadError = "Cover unavailable"
+            onCoverReady?()
+        }
+    }
+}
+
 private struct TrackBadge: View {
     @EnvironmentObject private var model: AppModel
     let width: CGFloat
@@ -851,7 +998,6 @@ private struct TrackBadge: View {
         let placement = position.horizontalPlacement
         let innerInsets = badgeInnerInsets(compact: compact, placement: placement)
         let waveformSlotH = 14 * scale
-        let coverSide = max(28, 38 * scale)
         let marqueeDebugStretch = model.debugModeEnabled
 
         VStack(spacing: 1) {
@@ -914,16 +1060,7 @@ private struct TrackBadge: View {
             .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
 
             if let track = model.currentTrack {
-                HStack(alignment: .center, spacing: 8 * scale) {
-                    if placement == .trailing {
-                        trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
-                        TrackCoverThumbnail(url: track.image, side: coverSide)
-                    } else {
-                        TrackCoverThumbnail(url: track.image, side: coverSide)
-                        trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
+                trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
             } else {
                 GlowingPixelText(
                     text: model.streamStatus,
@@ -980,49 +1117,6 @@ private struct TrackBadge: View {
             )
         }
         .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
-    }
-}
-
-private struct TrackCoverThumbnail: View {
-    let url: URL?
-    let side: CGFloat
-
-    var body: some View {
-        Group {
-            if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .empty:
-                        Color.white.opacity(0.10)
-                    case .failure:
-                        placeholder
-                    @unknown default:
-                        placeholder
-                    }
-                }
-            } else {
-                placeholder
-            }
-        }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 4, style: .continuous)
-                .stroke(Color.white.opacity(0.22), lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(0.55), radius: 2, y: 1)
-    }
-
-    private var placeholder: some View {
-        ZStack {
-            Color.black.opacity(0.35)
-            PixelIcon(.musicNote, size: max(14, side * 0.42))
-                .foregroundStyle(.white.opacity(0.62))
-        }
     }
 }
 
