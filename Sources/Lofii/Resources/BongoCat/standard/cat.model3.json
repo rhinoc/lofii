@@ -48,6 +48,38 @@
           "FadeInTime": 0,
           "FadeOutTime": 0
         }
+      ],
+      "idle": [
+        {
+          "File": "idle_angle_x.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_angle_y.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_wave.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_lightning.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_thug_life.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_ascend.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        }
       ]
     }
   },

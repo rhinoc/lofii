@@ -803,6 +803,8 @@ extension BongoCatModelKind {
 final class AppModel: ObservableObject {
     private static let chillhopCrossfadeDuration: TimeInterval = 2.8
     private static let chillhopQueueLowWatermark = 3
+    private static let playbackWatchdogInterval: TimeInterval = 2
+    private static let playbackStallTickThreshold = 3
 
     @Published private(set) var presets = LofiiPreset.presets
     @Published private(set) var gifAssets = GifSceneCatalog.animated
@@ -929,6 +931,9 @@ final class AppModel: ObservableObject {
 
     @Published var isPlaying = true {
         didSet {
+            DiagnosticLog.appendPlayback(
+                "model.isPlaying value=\(isPlaying) preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID)"
+            )
             syncPlayback()
             refreshSystemMediaControls()
         }
@@ -936,6 +941,7 @@ final class AppModel: ObservableObject {
     @Published var volume = 0.58 {
         didSet {
             audioEngine.setVolume(volume)
+            DiagnosticLog.appendPlayback("model.volume value=\(volume)")
         }
     }
     @Published var alwaysOnTop = AppModel.loadAlwaysOnTop() {
@@ -1046,6 +1052,13 @@ final class AppModel: ObservableObject {
         }
     }
 
+    @Published var bongoStageDragLocked: Bool = AppModel.loadBongoStageDragLocked() {
+        didSet {
+            guard bongoStageDragLocked != oldValue else { return }
+            UserDefaults.standard.set(bongoStageDragLocked, forKey: Self.bongoStageDragLockedKey)
+        }
+    }
+
     var bongoStageAnchor: BongoStageAnchor {
         get { bongoStagePlacement.anchor }
         set { selectBongoStageAnchor(newValue) }
@@ -1098,6 +1111,7 @@ final class AppModel: ObservableObject {
     private static let bongoCatPackSelectionKey = "lofii.bongoCatPackSelection"
     private static let bongoStageAnchorKey = "lofii.bongoStageAnchor"
     private static let bongoStagePlacementKey = "lofii.bongoStagePlacement"
+    private static let bongoStageDragLockedKey = "lofii.bongoStageDragLocked"
     private static let bongoStageScaleTierKey = "lofii.bongoStageScaleTier"
     private static let bongoInputTickRateKey = "lofii.bongoInputTickRate"
     private static let bongoMouseCursorSpaceKey = "lofii.bongoMouseCursorSpace"
@@ -1218,6 +1232,13 @@ final class AppModel: ObservableObject {
         return value
     }
 
+    private static func loadBongoStageDragLocked() -> Bool {
+        if UserDefaults.standard.object(forKey: bongoStageDragLockedKey) == nil {
+            return true
+        }
+        return UserDefaults.standard.bool(forKey: bongoStageDragLockedKey)
+    }
+
     private static func loadBongoStageScaleTier() -> BongoStageScaleTier {
         guard let raw = UserDefaults.standard.string(forKey: bongoStageScaleTierKey),
               let value = BongoStageScaleTier(rawValue: raw)
@@ -1316,6 +1337,9 @@ final class AppModel: ObservableObject {
         // as "loading" before they ever press play.
         audioEngine.onPlaybackStateChange = { [weak self] state in
             guard let self else { return }
+            DiagnosticLog.appendPlayback(
+                "model.playbackState state=\(String(describing: state)) isPlaying=\(self.isPlaying) isBuffering=\(self.isBuffering) preset=\(self.currentPreset.id) track=\"\(self.currentTrack?.title ?? "nil")\""
+            )
             switch state {
             case .buffering:
                 self.isBuffering = self.isPlaying
@@ -1332,10 +1356,16 @@ final class AppModel: ObservableObject {
         audioEngine.onPlaybackStallDetected = { [weak self] reason in
             guard let self else { return }
             self.logger.info("Playback stall signal reason=\(reason, privacy: .public)")
+            DiagnosticLog.appendPlayback(
+                "model.stallSignal reason=\"\(reason)\" \(self.playbackDiagnosticContext(sample: self.audioEngine.playbackSample()))"
+            )
             self.isBuffering = self.isPlaying
             self.schedulePlaybackRecovery(.hardReload)
         }
 
+        DiagnosticLog.appendPlayback(
+            "model.launch version=\(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown") preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) isPlaying=\(isPlaying) volume=\(volume)"
+        )
         syncPlayback()
 
         currentGifIndex = Int.random(in: 0..<max(gifAssets.count, 1))
@@ -1441,6 +1471,10 @@ final class AppModel: ObservableObject {
         bongoOverlayVisible.toggle()
     }
 
+    func toggleBongoStageDragLock() {
+        bongoStageDragLocked.toggle()
+    }
+
     var isBongoDesktopMaskEnabled: Bool {
         bongoDesktopMaskTint != .hidden
     }
@@ -1463,6 +1497,9 @@ final class AppModel: ObservableObject {
     }
 
     private func syncPlayback() {
+        DiagnosticLog.appendPlayback(
+            "model.syncPlayback isPlaying=\(isPlaying) preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) currentTrack=\"\(currentTrack?.title ?? "nil")\""
+        )
         if isPlaying {
             // Optimistically flip the spinner on so the play button responds
             // the instant it's pressed, even before AVPlayer's KVO catches
@@ -1509,7 +1546,7 @@ final class AppModel: ObservableObject {
         stalledPlaybackWatchdogTicks = 0
 
         guard isPlaying else { return }
-        playbackWatchdogTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        playbackWatchdogTimer = Timer.scheduledTimer(withTimeInterval: Self.playbackWatchdogInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.evaluatePlaybackWatchdog()
             }
@@ -1539,39 +1576,37 @@ final class AppModel: ObservableObject {
             return
         }
 
-        if sample.isWaiting || sample.isBufferEmpty {
-            stalledPlaybackWatchdogTicks = 0
-            return
-        }
-
-        guard !currentTrack.isSynchronizedLiveStream, sample.isPlaying else {
-            stalledPlaybackWatchdogTicks = 0
-            return
-        }
-
-        guard let previous = lastPlaybackWatchdogSample,
-              previous.itemID == sample.itemID,
-              let previousTime = previous.currentTime,
-              let currentTime = sample.currentTime
-        else {
-            stalledPlaybackWatchdogTicks = 0
-            return
-        }
-
-        if currentTime - previousTime > 0.2 {
+        let stallReason: String
+        if sample.isWaiting {
+            stallReason = "waiting"
+        } else if sample.isBufferEmpty {
+            stallReason = "buffer-empty"
+        } else if !sample.isPlaying {
+            stallReason = "not-playing"
+        } else if let previous = lastPlaybackWatchdogSample,
+                  previous.itemID == sample.itemID,
+                  let previousTime = previous.currentTime,
+                  let currentTime = sample.currentTime,
+                  currentTime - previousTime <= 0.2 {
+            stallReason = "no-progress"
+        } else {
             stalledPlaybackWatchdogTicks = 0
             return
         }
 
         stalledPlaybackWatchdogTicks += 1
-        guard stalledPlaybackWatchdogTicks >= 3 else { return }
+        guard stalledPlaybackWatchdogTicks >= Self.playbackStallTickThreshold else { return }
 
+        let stallSeconds = Self.playbackWatchdogInterval * TimeInterval(Self.playbackStallTickThreshold)
         logger.info(
-            "Playback watchdog detected no progress title=\(currentTrack.title, privacy: .public) time=\(currentTime, format: .fixed(precision: 2)) rate=\(sample.rate, format: .fixed(precision: 2)) likely=\(sample.isLikelyToKeepUp)"
+            "Playback watchdog detected stall reason=\(stallReason, privacy: .public) seconds=\(stallSeconds, format: .fixed(precision: 1)) title=\(currentTrack.title, privacy: .public) rate=\(sample.rate, format: .fixed(precision: 2)) status=\(sample.timeControlStatus, privacy: .public) likely=\(sample.isLikelyToKeepUp)"
+        )
+        DiagnosticLog.appendPlayback(
+            "model.watchdogStall thresholdSeconds=\(Self.formatSeconds(stallSeconds)) reason=\(stallReason) \(playbackDiagnosticContext(sample: sample))"
         )
         stalledPlaybackWatchdogTicks = 0
         isBuffering = true
-        schedulePlaybackRecovery(.softResume)
+        schedulePlaybackRecovery(stallReason == "no-progress" ? .softResume : .hardReload)
     }
 
     private func loadLiveTrack(replacingCurrentItem: Bool) async {
@@ -1587,6 +1622,9 @@ final class AppModel: ObservableObject {
 
                 if replacingCurrentItem || currentTrack == nil || !currentPreset.radio.source.isChillhop {
                     let liveTrack = playlist[playlistIndex]
+                    DiagnosticLog.appendPlayback(
+                        "model.loadTrack provider=chillhop stationID=\(stationID) replacing=\(replacingCurrentItem) index=\(playlistIndex) queueCount=\(max(playlist.count - playlistIndex - 1, 0)) title=\"\(liveTrack.title)\" elapsed=\(Self.formatSeconds(liveTrack.elapsedPlaybackSeconds())) url=\(liveTrack.streamURL.absoluteString)"
+                    )
                     currentTrack = liveTrack
                     chillhopQueue = Array(playlist.dropFirst(playlistIndex + 1))
                     prepareUpcomingChillhopTrack()
@@ -1598,9 +1636,15 @@ final class AppModel: ObservableObject {
                         streamStatus = "Ready · \(liveTrack.title)"
                     }
                 } else {
+                    DiagnosticLog.appendPlayback(
+                        "model.refillQueue provider=chillhop stationID=\(stationID) playlistCount=\(playlist.count) currentTrack=\"\(currentTrack?.title ?? "nil")\""
+                    )
                     refillChillhopQueue(with: playlist)
                 }
             } catch {
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrackFailed provider=chillhop stationID=\(stationID) replacing=\(replacingCurrentItem) error=\"\(error.localizedDescription)\""
+                )
                 resetChillhopPlaybackState()
                 currentTrack = nil
                 streamStatus = "Stream unavailable"
@@ -1615,6 +1659,9 @@ final class AppModel: ObservableObject {
             )
             let trackChanged = currentTrack?.id != streamTrack.id || currentTrack?.streamURL != streamTrack.streamURL
             if trackChanged {
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrack provider=direct replacing=\(replacingCurrentItem) trackChanged=true title=\"\(streamTrack.title)\" url=\(streamTrack.streamURL.absoluteString)"
+                )
             }
             currentTrack = streamTrack
 
@@ -1637,6 +1684,9 @@ final class AppModel: ObservableObject {
                     currentTrack?.id != streamTrack.id ||
                     currentTrack?.streamURL != streamTrack.streamURL
 
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrack provider=radioco stationID=\(stationID) replacing=\(replacingCurrentItem) trackChanged=\(trackChanged) title=\"\(streamTrack.title)\" url=\(streamTrack.streamURL.absoluteString)"
+                )
                 currentTrack = streamTrack
 
                 if isPlaying {
@@ -1651,6 +1701,9 @@ final class AppModel: ObservableObject {
                 }
             } catch {
                 logger.error("Radio.co snapshot fetch failed station=\(stationID, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrackFailed provider=radioco stationID=\(stationID) replacing=\(replacingCurrentItem) error=\"\(error.localizedDescription)\""
+                )
                 if replacingCurrentItem || currentTrack == nil {
                     currentTrack = nil
                     streamStatus = "Stream unavailable"
@@ -1668,6 +1721,9 @@ final class AppModel: ObservableObject {
         let shouldBootstrapChillhopPosition = currentPreset.radio.source.isChillhop && replacingCurrentItem
         let elapsed = shouldBootstrapChillhopPosition ? currentTrack.elapsedPlaybackSeconds() : 0
         let reason = playbackStartReason(for: currentTrack, replacingCurrentItem: replacingCurrentItem)
+        DiagnosticLog.appendPlayback(
+            "model.playCurrent reason=\(reason) replacing=\(replacingCurrentItem) preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) title=\"\(currentTrack.title)\" elapsed=\(Self.formatSeconds(elapsed)) synchronized=\(currentTrack.isSynchronizedLiveStream)"
+        )
         audioEngine.play(
             track: currentTrack,
             elapsed: elapsed,
@@ -1743,6 +1799,9 @@ final class AppModel: ObservableObject {
 
         guard isPlaying else { return }
 
+        DiagnosticLog.appendPlayback(
+            "model.scheduleChillhopTransition title=\"\(track.title)\" elapsed=\(Self.formatSeconds(elapsed)) remaining=\(Self.formatSeconds(remaining)) queueCount=\(chillhopQueue.count)"
+        )
         let fireDate = Date().addingTimeInterval(remaining)
         chillhopTransitionFireDate = fireDate
         chillhopTransitionTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
@@ -1796,6 +1855,9 @@ final class AppModel: ObservableObject {
             reason: "chillhop crossfade"
         )
         currentTrack = nextTrack
+        DiagnosticLog.appendPlayback(
+            "model.beginChillhopTransition didCrossfade=\(didCrossfade) nextTitle=\"\(nextTrack.title)\" remainingQueue=\(chillhopQueue.count)"
+        )
 
         if !didCrossfade {
             audioEngine.play(
@@ -1834,10 +1896,18 @@ final class AppModel: ObservableObject {
             cancelPlaybackRecovery()
             return
         }
-        guard pendingPlaybackRecovery != step else { return }
+        guard pendingPlaybackRecovery != step else {
+            DiagnosticLog.appendPlayback(
+                "model.recoveryAlreadyPending step=\(step) \(playbackDiagnosticContext(sample: audioEngine.playbackSample()))"
+            )
+            return
+        }
 
         playbackRecoveryTask?.cancel()
         pendingPlaybackRecovery = step
+        DiagnosticLog.appendPlayback(
+            "model.scheduleRecovery step=\(step) delay=\(Self.formatSeconds(step.delay)) \(playbackDiagnosticContext(sample: audioEngine.playbackSample()))"
+        )
         playbackRecoveryTask = Task { [weak self] in
             let delay = UInt64(step.delay * 1_000_000_000)
             try? await Task.sleep(nanoseconds: delay)
@@ -1860,6 +1930,9 @@ final class AppModel: ObservableObject {
 
         isBuffering = true
         streamStatus = reconnectingStatus(for: currentTrack)
+        DiagnosticLog.appendPlayback(
+            "model.performRecovery step=\(step) \(playbackDiagnosticContext(sample: audioEngine.playbackSample()))"
+        )
 
         switch step {
         case .softResume:
@@ -1892,6 +1965,40 @@ final class AppModel: ObservableObject {
     private func reconnectingStatus(for track: LiveTrack) -> String {
         let prefix = track.isSynchronizedLiveStream ? "Track stalled" : "Stream stalled"
         return "\(prefix) · reconnecting…"
+    }
+
+    private func playbackDiagnosticContext(sample: StreamingAudioEngine.PlaybackSample) -> String {
+        [
+            "preset=\(currentPreset.id)",
+            "source=\(currentPreset.radio.source.stableID)",
+            "track=\"\(currentTrack?.title ?? "nil")\"",
+            "artists=\"\(currentTrack?.artists ?? "nil")\"",
+            "synchronized=\(currentTrack?.isSynchronizedLiveStream ?? false)",
+            "streamStatus=\"\(streamStatus)\"",
+            "isPlayingIntent=\(isPlaying)",
+            "isBuffering=\(isBuffering)",
+            "volume=\(volume)",
+            "item=\(sample.hasItem)",
+            "itemStatus=\(sample.itemStatus)",
+            "timeControl=\(sample.timeControlStatus)",
+            "rate=\(Self.formatSeconds(Double(sample.rate)))",
+            "time=\(sample.currentTime.map(Self.formatSeconds) ?? "nil")",
+            "waiting=\(sample.isWaiting)",
+            "playing=\(sample.isPlaying)",
+            "bufferEmpty=\(sample.isBufferEmpty)",
+            "bufferFull=\(sample.isBufferFull)",
+            "likely=\(sample.isLikelyToKeepUp)",
+            "itemFailed=\(sample.itemFailed)",
+            "itemError=\"\(sample.errorDescription ?? "nil")\"",
+            "playerError=\"\(sample.playerErrorDescription ?? "nil")\"",
+            "loaded=\(sample.loadedTimeRanges)",
+            "url=\(sample.currentURL ?? "nil")"
+        ].joined(separator: " ")
+    }
+
+    private static func formatSeconds(_ value: TimeInterval) -> String {
+        guard value.isFinite else { return "nan" }
+        return String(format: "%.2f", value)
     }
 
     private func deduplicatedTracks(_ tracks: [LiveTrack]) -> [LiveTrack] {

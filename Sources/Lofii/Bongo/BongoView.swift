@@ -48,6 +48,7 @@ private struct BongoUnifiedStage: View {
     @State private var darkFieldOpacity: Double = 0
     @State private var lastSettledAssetId: String?
     @State private var lastSettledVideoKey: String?
+    @State private var lastSettledVisualMode: VisualMode?
     @State private var loadError: String?
     /// Prevents showing a stale URL (e.g. mp4 after switching GIF→cinematic) in `unifiedMetalSource`.
     @State private var settledLoadSessionKey: String?
@@ -129,13 +130,16 @@ private struct BongoUnifiedStage: View {
     }
 
     private var unifiedMetalSource: StageMetalSource? {
-        guard let localURL, settledLoadSessionKey == loadSessionKey else { return nil }
+        guard let localURL else { return nil }
         switch model.visualMode {
         case .cinematic:
+            guard settledLoadSessionKey == loadSessionKey else { return nil }
             return .video(localURL)
         case .gif:
+            guard settledLoadSessionKey == loadSessionKey else { return nil }
             return .gif(localURL)
         case .cover:
+            guard settledLoadSessionKey == loadSessionKey || lastSettledVisualMode == .cover else { return nil }
             return .image(localURL)
         }
     }
@@ -175,6 +179,10 @@ private struct BongoUnifiedStage: View {
                         bongoPackReloadToken: model.bongoPackReloadToken,
                         maxLogicalStageSize: pack.maxLogicalStageSize(scaledBy: model.bongoStageScaleTier),
                         stagePlacement: model.bongoStagePlacement,
+                        isStageDragLocked: model.bongoStageDragLocked,
+                        backgroundTransitionSnowURL: model.visualMode == .cover ? transitionSnowURL : nil,
+                        backgroundTransitionSnowOpacity: model.visualMode == .cover ? transitionSnowOpacity : 0,
+                        backgroundDarkFieldOpacity: model.visualMode == .cover ? darkFieldOpacity : 0,
                         desktopTint: model.bongoDesktopMaskTint,
                         pressedKeyImages: coordinator.pressedKeyImages,
                         artworkScrollWheel: artworkScrollWheel,
@@ -209,7 +217,7 @@ private struct BongoUnifiedStage: View {
                 .allowsHitTesting(model.visualStageReady)
             }
 
-            if let transitionSnowURL {
+            if model.visualMode != .cover, let transitionSnowURL {
                 SnowOverlayView(url: transitionSnowURL)
                     .opacity(transitionSnowOpacity)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -217,7 +225,7 @@ private struct BongoUnifiedStage: View {
             }
 
             Color.black
-                .opacity(darkFieldOpacity)
+                .opacity(model.visualMode == .cover ? 0 : darkFieldOpacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
 
@@ -290,6 +298,7 @@ private struct BongoUnifiedStage: View {
             localURL = nil
             loadError = nil
             settledLoadSessionKey = nil
+            lastSettledVisualMode = nil
             return
         }
 
@@ -304,6 +313,7 @@ private struct BongoUnifiedStage: View {
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .gif
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -323,6 +333,7 @@ private struct BongoUnifiedStage: View {
             lastSettledAssetId = asset.id
             loadError = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .gif
             model.markPrimaryVisualMediaReady()
         } catch {
             guard !Task.isCancelled else { return }
@@ -331,6 +342,9 @@ private struct BongoUnifiedStage: View {
             loadError = diskCached == nil ? "GIF unavailable" : nil
             if diskCached != nil {
                 settledLoadSessionKey = loadSessionKey
+                lastSettledVisualMode = .gif
+            } else {
+                lastSettledVisualMode = nil
             }
             model.markPrimaryVisualMediaReady()
         }
@@ -370,6 +384,7 @@ private struct BongoUnifiedStage: View {
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .cinematic
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -393,6 +408,7 @@ private struct BongoUnifiedStage: View {
             }
             loadError = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .cinematic
         } else {
             localURL = nil
             loadError = nil
@@ -406,6 +422,7 @@ private struct BongoUnifiedStage: View {
                 }
                 localURL = url
                 settledLoadSessionKey = loadSessionKey
+                lastSettledVisualMode = .cinematic
             } catch {
                 guard !Task.isCancelled else {
                     darkFieldOpacity = 0
@@ -416,6 +433,7 @@ private struct BongoUnifiedStage: View {
                 localURL = nil
                 loadError = "Scene unavailable"
                 settledLoadSessionKey = nil
+                lastSettledVisualMode = nil
             }
         }
 
@@ -461,6 +479,7 @@ private struct BongoUnifiedStage: View {
             lastSettledAssetId = nil
             loadError = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .cover
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -476,6 +495,7 @@ private struct BongoUnifiedStage: View {
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .cover
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -495,6 +515,7 @@ private struct BongoUnifiedStage: View {
             lastSettledAssetId = artworkURL.absoluteString
             loadError = nil
             settledLoadSessionKey = loadSessionKey
+            lastSettledVisualMode = .cover
             model.markPrimaryVisualMediaReady()
         } catch {
             guard !Task.isCancelled else { return }
@@ -503,6 +524,9 @@ private struct BongoUnifiedStage: View {
             loadError = diskCached == nil ? "Cover unavailable" : nil
             if diskCached != nil {
                 settledLoadSessionKey = loadSessionKey
+                lastSettledVisualMode = .cover
+            } else {
+                lastSettledVisualMode = nil
             }
             model.markPrimaryVisualMediaReady()
         }
@@ -538,8 +562,9 @@ private final class BongoStageMTKView: MTKView {
     var onStageTap: (() -> Void)?
     var onStageDrag: ((_ currentPoint: CGPoint, _ startPoint: CGPoint) -> Void)?
     var onStageDragEnded: (() -> Void)?
+    var isStageDragLocked = true
 
-    private var pendingStageInteraction: (origin: CGPoint, time: TimeInterval, isDragging: Bool)?
+    private var pendingStageInteraction: (origin: CGPoint, time: TimeInterval, mouseDownEvent: NSEvent, isDragging: Bool, didMoveStage: Bool)?
     private let stageTapMaxMove: CGFloat = 10
     private let stageTapMaxDuration: TimeInterval = 0.45
 
@@ -574,12 +599,20 @@ private final class BongoStageMTKView: MTKView {
         }
         let p = convert(event.locationInWindow, from: nil)
         let contains = stageContainsPoint?(p) == true
+        NSLog(
+            "[BongoTap] mouseDown point=(%.1f, %.1f) contains=%@ dragLocked=%@",
+            Double(p.x),
+            Double(p.y),
+            contains ? "true" : "false",
+            isStageDragLocked ? "true" : "false"
+        )
         if contains {
-            pendingStageInteraction = (p, event.timestamp, false)
-        } else {
-            pendingStageInteraction = nil
-            window?.performDrag(with: event)
+            pendingStageInteraction = (p, event.timestamp, event, false, false)
+            return
         }
+        pendingStageInteraction = nil
+        NSLog("[BongoTap] mouseDown outside model; forwarding to window drag")
+        window?.performDrag(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -595,6 +628,13 @@ private final class BongoStageMTKView: MTKView {
             guard distance > stageTapMaxMove else { return }
             interaction.isDragging = true
         }
+        if isStageDragLocked {
+            NSLog("[BongoTap] drag threshold exceeded while drag is locked; forwarding to window drag")
+            pendingStageInteraction = nil
+            window?.performDrag(with: interaction.mouseDownEvent)
+            return
+        }
+        interaction.didMoveStage = true
         pendingStageInteraction = interaction
         onStageDrag?(p, interaction.origin)
     }
@@ -605,18 +645,21 @@ private final class BongoStageMTKView: MTKView {
             return
         }
         defer {
-            if pendingStageInteraction?.isDragging == true {
+            if pendingStageInteraction?.didMoveStage == true {
                 onStageDragEnded?()
             }
             pendingStageInteraction = nil
         }
         guard let start = pendingStageInteraction else {
+            NSLog("[BongoTap] mouseUp ignored: no pending interaction")
             return
         }
         guard !start.isDragging else {
+            NSLog("[BongoTap] mouseUp ignored: interaction became drag")
             return
         }
         guard event.clickCount <= 1 else {
+            NSLog("[BongoTap] mouseUp ignored: clickCount=%ld", event.clickCount)
             return
         }
         let p = convert(event.locationInWindow, from: nil)
@@ -624,16 +667,20 @@ private final class BongoStageMTKView: MTKView {
         let dy = p.y - start.origin.y
         let distance = hypot(dx, dy)
         guard distance <= stageTapMaxMove else {
+            NSLog("[BongoTap] mouseUp ignored: moved %.2f > %.2f", Double(distance), Double(stageTapMaxMove))
             return
         }
         let duration = event.timestamp - start.time
         guard duration <= stageTapMaxDuration else {
+            NSLog("[BongoTap] mouseUp ignored: duration %.3f > %.3f", duration, stageTapMaxDuration)
             return
         }
         let contains = stageContainsPoint?(p) == true
         guard contains else {
+            NSLog("[BongoTap] mouseUp ignored: ended outside model")
             return
         }
+        NSLog("[BongoTap] accepted tap; starting random motion")
         onStageTap?()
     }
 }
@@ -648,6 +695,10 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     /// User-tier cap (`pack.maxLogicalStageSize` × scale); drives fit, mask, and Live2D viewport.
     let maxLogicalStageSize: CGSize
     let stagePlacement: BongoStagePlacement
+    let isStageDragLocked: Bool
+    let backgroundTransitionSnowURL: URL?
+    let backgroundTransitionSnowOpacity: Double
+    let backgroundDarkFieldOpacity: Double
     let desktopTint: BongoDesktopMaskTint
     let pressedKeyImages: Set<String>
     let artworkScrollWheel: ((Double) -> Void)?
@@ -706,6 +757,10 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
             bongoPackReloadToken: bongoPackReloadToken,
             maxLogicalStageSize: maxLogicalStageSize,
             stagePlacement: stagePlacement,
+            isStageDragLocked: isStageDragLocked,
+            backgroundTransitionSnowURL: backgroundTransitionSnowURL,
+            backgroundTransitionSnowOpacity: backgroundTransitionSnowOpacity,
+            backgroundDarkFieldOpacity: backgroundDarkFieldOpacity,
             desktopTint: desktopTint,
             pressedKeyImages: pressedKeyImages,
             artworkScrollWheel: artworkScrollWheel,
@@ -838,6 +893,15 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var bongoBackgroundPack: BongoCatPack?
     private var keyTextures: [String: MTLTexture] = [:]
     private var keyTexturePack: BongoCatPack?
+    private var backgroundTransitionSnowURL: URL?
+    private var backgroundTransitionSnowOpacity: Double = 0
+    private var backgroundDarkFieldOpacity: Double = 0
+    private var transitionSnowGifCache: GifFrameCache?
+    private let transitionSnowTextureFrameCache = GifMetalTextureFrameCache()
+    private var currentTransitionSnowTexture: MTLTexture?
+    private var currentTransitionSnowSize: CGSize = .zero
+    private var transitionSnowFrameIndex = 0
+    private var nextTransitionSnowFrameTime: CFTimeInterval = 0
     private var desktopLayout: BongoDesktopLayout = .fallback
     private var desktopLayoutPack: BongoCatPack?
     private var desktopLayoutReloadToken: UInt = 0
@@ -886,6 +950,9 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         if let backgroundSource, case .image = backgroundSource {
             configureBackground(backgroundSource)
         }
+        if let backgroundTransitionSnowURL {
+            configureBackgroundTransitionSnow(url: backgroundTransitionSnowURL)
+        }
     }
 
     func update(
@@ -896,6 +963,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         bongoPackReloadToken: UInt,
         maxLogicalStageSize: CGSize,
         stagePlacement: BongoStagePlacement,
+        isStageDragLocked: Bool,
+        backgroundTransitionSnowURL: URL?,
+        backgroundTransitionSnowOpacity: Double,
+        backgroundDarkFieldOpacity: Double,
         desktopTint: BongoDesktopMaskTint,
         pressedKeyImages: Set<String>,
         artworkScrollWheel: ((Double) -> Void)?,
@@ -927,6 +998,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         let playbackChanged = self.isPlaying != isPlaying
         let cappedFPS = StageMetalMTKRuntime.clampedPreferredFramesPerSecond(renderFramesPerSecond)
         let renderRateChanged = self.renderFramesPerSecond != cappedFPS
+        let backgroundTransitionChanged =
+            self.backgroundTransitionSnowURL != backgroundTransitionSnowURL ||
+            self.backgroundTransitionSnowOpacity != backgroundTransitionSnowOpacity ||
+            self.backgroundDarkFieldOpacity != backgroundDarkFieldOpacity
 
         self.isPlaying = isPlaying
         self.renderFramesPerSecond = cappedFPS
@@ -937,6 +1012,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             self.backgroundSource = background
             configureBackground(background)
         }
+        if self.backgroundTransitionSnowURL != backgroundTransitionSnowURL {
+            configureBackgroundTransitionSnow(url: backgroundTransitionSnowURL)
+        }
+        self.backgroundTransitionSnowOpacity = backgroundTransitionSnowOpacity
+        self.backgroundDarkFieldOpacity = backgroundDarkFieldOpacity
         if self.pack != pack {
             bongoBackgroundTexture = nil
             keyTextures.removeAll(keepingCapacity: true)
@@ -968,13 +1048,15 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         if let stageView = view as? BongoStageMTKView {
             stageView.artworkScrollWheel = artworkScrollWheel
             stageView.artworkContextMenu = artworkContextMenu
+            stageView.isStageDragLocked = isStageDragLocked
             stageView.stageContainsPoint = { [weak self] point in
                 guard let self, let v = self.view else { return false }
                 let rect = self.modelHitRectInViewBounds(v)
                 return rect.contains(point)
             }
             stageView.onStageTap = { [weak self] in
-                _ = self?.bongoCoordinator.tryStartRandomTapMotionIfNotBusy()
+                let started = self?.bongoCoordinator.tryStartRandomTapMotionIfNotBusy() ?? false
+                NSLog("[BongoTap] native tap motion requested started=%@", started ? "true" : "false")
             }
             stageView.onStageDrag = { [weak self] currentPoint, startPoint in
                 self?.dragBongoStage(currentPoint: currentPoint, startPoint: startPoint)
@@ -1001,6 +1083,9 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         self.maxFittedStageHeightFraction = maxFittedStageHeightFraction
         self.layoutContainerSize = layoutContainerSize
         applyPlaybackStateForVideo()
+        if backgroundTransitionChanged, !isPlaying {
+            view?.draw()
+        }
     }
 
     /// Points size used for Bongo stage fitting.
@@ -1150,6 +1235,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             effectsEnabled: false,
             pipelineState: stagePipelineState
         )
+        drawBackgroundTransitionEffects(
+            commandBuffer: commandBuffer,
+            target: offscreenTexture,
+            viewportSize: viewportSize
+        )
 
         drawBongoStaticLayers(
             commandBuffer: commandBuffer,
@@ -1273,6 +1363,43 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
     }
 
+    private func drawBackgroundTransitionEffects(
+        commandBuffer: MTLCommandBuffer,
+        target: MTLTexture,
+        viewportSize: CGSize
+    ) {
+        let snowTexture = backgroundTransitionSnowOpacity > 0.001 ? transitionSnowTexture() : nil
+        guard let encoder = makeLoadEncoder(commandBuffer: commandBuffer, target: target) else { return }
+
+        if backgroundTransitionSnowOpacity > 0.001,
+           let quadPipelineState,
+           let texture = snowTexture {
+            encoder.setRenderPipelineState(quadPipelineState)
+            drawTextureAspectFill(
+                texture: texture,
+                sourceSize: currentTransitionSnowSize,
+                encoder: encoder,
+                viewportSize: viewportSize,
+                opacity: Float(backgroundTransitionSnowOpacity)
+            )
+        }
+
+        if backgroundDarkFieldOpacity > 0.001,
+           let maskPipelineState {
+            encoder.setRenderPipelineState(maskPipelineState)
+            var uniforms = MaskUniforms(
+                color: SIMD4<Float>(0, 0, 0, Float(backgroundDarkFieldOpacity)),
+                viewportSize: SIMD2<Float>(Float(viewportSize.width), Float(viewportSize.height)),
+                leftY: 0,
+                rightY: 0
+            )
+            encoder.setFragmentBytes(&uniforms, length: MemoryLayout<MaskUniforms>.stride, index: 0)
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
+        }
+
+        encoder.endEncoding()
+    }
+
     private func stageUniforms(
         viewportSize: CGSize,
         sourceSize: CGSize,
@@ -1386,11 +1513,42 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private func drawStageTextureQuad(texture: MTLTexture, encoder: MTLRenderCommandEncoder, viewportSize: CGSize) {
         let rect = stageRectInPixels(viewportSize: viewportSize)
         guard rect.width > 0, rect.height > 0 else { return }
+        drawTextureQuad(texture: texture, rect: rect, encoder: encoder, viewportSize: viewportSize, opacity: 1)
+    }
+
+    private func drawTextureAspectFill(
+        texture: MTLTexture,
+        sourceSize: CGSize,
+        encoder: MTLRenderCommandEncoder,
+        viewportSize: CGSize,
+        opacity: Float
+    ) {
+        let sourceWidth = max(sourceSize.width, 1)
+        let sourceHeight = max(sourceSize.height, 1)
+        let scale = max(viewportSize.width / sourceWidth, viewportSize.height / sourceHeight)
+        let drawnSize = CGSize(width: sourceWidth * scale, height: sourceHeight * scale)
+        let rect = CGRect(
+            x: (viewportSize.width - drawnSize.width) / 2,
+            y: (viewportSize.height - drawnSize.height) / 2,
+            width: drawnSize.width,
+            height: drawnSize.height
+        )
+        drawTextureQuad(texture: texture, rect: rect, encoder: encoder, viewportSize: viewportSize, opacity: opacity)
+    }
+
+    private func drawTextureQuad(
+        texture: MTLTexture,
+        rect: CGRect,
+        encoder: MTLRenderCommandEncoder,
+        viewportSize: CGSize,
+        opacity: Float
+    ) {
+        guard rect.width > 0, rect.height > 0, opacity > 0 else { return }
         var uniforms = QuadUniforms(
             viewportSize: SIMD2<Float>(Float(viewportSize.width), Float(viewportSize.height)),
             rectOrigin: SIMD2<Float>(Float(rect.minX), Float(rect.minY)),
             rectSize: SIMD2<Float>(Float(rect.width), Float(rect.height)),
-            opacity: 1
+            opacity: opacity
         )
         encoder.setVertexBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 0)
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<QuadUniforms>.stride, index: 0)
@@ -1548,6 +1706,24 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    private func configureBackgroundTransitionSnow(url: URL?) {
+        backgroundTransitionSnowURL = url
+        transitionSnowGifCache = nil
+        transitionSnowTextureFrameCache.clear()
+        currentTransitionSnowTexture = nil
+        currentTransitionSnowSize = .zero
+        transitionSnowFrameIndex = 0
+        nextTransitionSnowFrameTime = 0
+
+        guard let url else { return }
+        transitionSnowGifCache = GifFrameCachePool.shared.cache(for: url) ?? GifFrameCache(url: url)
+        if let transitionSnowGifCache {
+            currentTransitionSnowSize = transitionSnowGifCache.pixelSize
+        }
+        transitionSnowTextureFrameCache.reset(url: url, frameCache: transitionSnowGifCache)
+        uploadTransitionSnowFrame(at: 0)
+    }
+
     private func applyPlaybackStateForVideo() {
         guard case .video = backgroundSource else { return }
         if isPlaying {
@@ -1578,6 +1754,17 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         case nil:
             return (nil, .zero)
         }
+    }
+
+    private func transitionSnowTexture() -> MTLTexture? {
+        guard backgroundTransitionSnowURL != nil else { return nil }
+        guard isPlaying || currentTransitionSnowTexture == nil else { return currentTransitionSnowTexture }
+        let now = CACurrentMediaTime()
+        guard nextTransitionSnowFrameTime <= 0 || now >= nextTransitionSnowFrameTime else {
+            return currentTransitionSnowTexture
+        }
+        uploadTransitionSnowFrame(at: transitionSnowFrameIndex)
+        return currentTransitionSnowTexture
     }
 
     private func updateVideoTexture() {
@@ -1696,6 +1883,31 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         } catch {
             print("[BongoUnifiedMetal] failed to upload GIF frame: \(error)")
             nextGifFrameTime = CACurrentMediaTime() + 0.25
+        }
+    }
+
+    private func uploadTransitionSnowFrame(at index: Int) {
+        guard
+            let cache = transitionSnowGifCache,
+            let textureLoader,
+            cache.frameCount > 0
+        else { return }
+
+        do {
+            let frame = try transitionSnowTextureFrameCache.texture(
+                at: index,
+                frameCache: cache,
+                textureLoader: textureLoader
+            )
+            guard let texture = frame.texture else { return }
+            currentTransitionSnowTexture = texture
+            currentTransitionSnowSize = frame.size
+            let safeIndex = index % cache.frameCount
+            transitionSnowFrameIndex = (safeIndex + 1) % cache.frameCount
+            nextTransitionSnowFrameTime = CACurrentMediaTime() + max(frame.delay, 0.016)
+        } catch {
+            print("[BongoUnifiedMetal] failed to upload transition snow frame: \(error)")
+            nextTransitionSnowFrameTime = CACurrentMediaTime() + 0.25
         }
     }
 
@@ -2143,7 +2355,7 @@ final class BongoCoordinator: ObservableObject {
     private var inputTickInterval: TimeInterval
     /// How pointer position maps to `ParamMouseX` / `ParamMouseY` (single display vs full desktop).
     private var mouseCursorSpace: BongoMouseCursorSpace
-    /// Rare random motions while the overlay is “live” (monitor running); long random delays between fires.
+    /// Random motions while the overlay is live.
     private var randomIdleMotionTimer: Timer?
 
     var bongoModelIsReady: Bool { isNativeReady || isModelLoaded }
@@ -2221,11 +2433,24 @@ final class BongoCoordinator: ObservableObject {
         )
     }
 
-    /// Starts a random Live2D motion on tap. Returns `false` if a tap motion is already playing or Cubism is not ready.
+    /// Starts a random Live2D motion on tap. Returns `false` if a motion is already playing or Cubism is not ready.
     @discardableResult
     func tryStartRandomTapMotionIfNotBusy() -> Bool {
+        guard let nativeRenderer else {
+            NSLog("[BongoTap] native renderer missing")
+            return false
+        }
+        let started = nativeRenderer.tryStartRandomTapMotion()
+        NSLog("[BongoTap] native renderer tryStartRandomTapMotion returned %@", started ? "true" : "false")
+        return started
+    }
+
+    /// Starts an idle Live2D motion. Imported packs use their declared `idle`/`Idle` group when present;
+    /// otherwise the native renderer falls back to any recognized `.motion3.json`.
+    @discardableResult
+    func tryStartRandomIdleMotionIfNotBusy() -> Bool {
         guard let nativeRenderer else { return false }
-        return nativeRenderer.tryStartRandomTapMotion()
+        return nativeRenderer.tryStartRandomIdleMotion()
     }
 
     /// Called from `BongoUnifiedMetalRenderer.attach` once the Metal device exists.
@@ -2332,9 +2557,8 @@ final class BongoCoordinator: ObservableObject {
         inputTickTimer = nil
     }
 
-    /// Rare autoplay: minutes apart so motion feels occasional, not constant.
-    private static let randomIdleMotionMinInterval: TimeInterval = 420
-    private static let randomIdleMotionMaxInterval: TimeInterval = 1080
+    private static let randomIdleMotionMinInterval: TimeInterval = 35
+    private static let randomIdleMotionMaxInterval: TimeInterval = 90
 
     private func scheduleRandomIdleMotionTimer() {
         cancelRandomIdleMotionTimer()
@@ -2348,6 +2572,7 @@ final class BongoCoordinator: ObservableObject {
         timer.tolerance = delay * 0.12
         RunLoop.main.add(timer, forMode: .common)
         randomIdleMotionTimer = timer
+        NSLog("[BongoIdle] scheduled random idle motion in %.1fs", delay)
     }
 
     private func cancelRandomIdleMotionTimer() {
@@ -2357,9 +2582,16 @@ final class BongoCoordinator: ObservableObject {
 
     /// Random autoplay only when input monitor is active, keys are not showing overlays, and Cubism can accept a motion.
     private func fireRandomIdleMotionIfEligible() {
-        guard monitor != nil else { return }
-        guard pressedKeyImages.isEmpty else { return }
-        _ = tryStartRandomTapMotionIfNotBusy()
+        guard monitor != nil else {
+            NSLog("[BongoIdle] skipped: monitor inactive")
+            return
+        }
+        guard pressedKeyImages.isEmpty else {
+            NSLog("[BongoIdle] skipped: key overlay active")
+            return
+        }
+        let started = tryStartRandomIdleMotionIfNotBusy()
+        NSLog("[BongoIdle] fired random idle motion started=%@", started ? "true" : "false")
     }
 
     private func runInputTick() {

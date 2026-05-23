@@ -21,6 +21,9 @@ struct LofiiApp: App {
             updaterDelegate: nil,
             userDriverDelegate: nil
         )
+        if updaterController.updater.automaticallyChecksForUpdates {
+            updaterController.updater.checkForUpdatesInBackground()
+        }
         // Register both bundled fonts before any view tries to use them.
         // Doing it in App.init guarantees they're resolvable on the very
         // first render (including SwiftUI previews) — `Font.pixel(...)`
@@ -107,6 +110,12 @@ struct LofiiApp: App {
                     updaterController.checkForUpdates(nil)
                 }
                 .disabled(!updaterController.updater.canCheckForUpdates)
+
+                if menuDebugRevealMonitor.revealKeyPressed {
+                    Button("Open Logs Folder") {
+                        DiagnosticLog.openDirectory()
+                    }
+                }
             }
         }
 
@@ -150,6 +159,10 @@ struct LofiiApp: App {
                     set: { model.debugModeEnabled = $0 }
                 ))
                 .help("Developer overlays; readout title/artist repeat for marquee testing when on")
+
+                Button("Open Logs Folder") {
+                    DiagnosticLog.openDirectory()
+                }
 
                 Divider()
             }

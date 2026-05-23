@@ -1,33 +1,57 @@
 {
-	"Version": 3,
-	"FileReferences": {
-		"Moc": "demomodel.moc3",
-		"Textures": [
-			"demomodel.1024/texture_00.png"
-		],
-		"DisplayInfo": "demomodel.cdi3.json",
-		"Expressions": [
-			{
-				"Name": "expression1",
-				"File": "expression1.exp3.json"
-			},
-			{
-				"Name": "expression0",
-				"File": "expression0.exp3.json"
-			}
-		]
-	},
-	"Groups": [
-		{
-			"Target": "Parameter",
-			"Name": "EyeBlink",
-			"Ids": []
-		},
-		{
-			"Target": "Parameter",
-			"Name": "LipSync",
-			"Ids": []
-		}
-	],
-	"HitAreas": []
+  "Version": 3,
+  "FileReferences": {
+    "Moc": "demomodel.moc3",
+    "Textures": [
+      "demomodel.1024/texture_00.png"
+    ],
+    "DisplayInfo": "demomodel.cdi3.json",
+    "Expressions": [
+      {
+        "Name": "expression1",
+        "File": "expression1.exp3.json"
+      },
+      {
+        "Name": "expression0",
+        "File": "expression0.exp3.json"
+      }
+    ],
+    "Motions": {
+      "idle": [
+        {
+          "File": "idle_angle_x.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_angle_y.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_hidden.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        },
+        {
+          "File": "idle_angry.motion3.json",
+          "FadeInTime": 0.1,
+          "FadeOutTime": 0.2
+        }
+      ]
+    }
+  },
+  "Groups": [
+    {
+      "Target": "Parameter",
+      "Name": "EyeBlink",
+      "Ids": []
+    },
+    {
+      "Target": "Parameter",
+      "Name": "LipSync",
+      "Ids": []
+    }
+  ],
+  "HitAreas": []
 }

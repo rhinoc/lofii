@@ -327,7 +327,8 @@ struct WidgetRootView: View {
                         }
 
                         if !model.visualStageReady,
-                           model.bongoOverlayVisible || model.visualMode == .gif || model.visualMode == .cover {
+                           model.bongoOverlayVisible || model.visualMode == .gif || model.visualMode == .cover,
+                           !(bongoVisible && model.visualMode == .cover) {
                             WorkspaceSnowLoadingCover()
                         }
 
@@ -3259,15 +3260,23 @@ enum SettingsContextMenu {
         modelItem.submenu = modelMenu
         bongoMenu.addItem(modelItem)
 
-        let bongoPosItem = NSMenuItem(title: "Alignment", action: nil, keyEquivalent: "")
+        let bongoPosItem = NSMenuItem(title: "Position", action: nil, keyEquivalent: "")
         let bongoPosMenu = NSMenu()
         if model.hasCustomBongoStagePlacement {
             let customItem = NSMenuItem(title: "Custom", action: nil, keyEquivalent: "")
             customItem.state = .on
             customItem.isEnabled = false
             bongoPosMenu.addItem(customItem)
-            bongoPosMenu.addItem(.separator())
         }
+        let bongoLockItem = NSMenuItem(
+            title: "Locked",
+            action: #selector(MenuTarget.toggleBongoStageDragLock(_:)),
+            keyEquivalent: ""
+        )
+        bongoLockItem.state = model.bongoStageDragLocked ? .on : .off
+        bongoLockItem.target = MenuTarget.shared
+        bongoPosMenu.addItem(bongoLockItem)
+        bongoPosMenu.addItem(.separator())
         addPositionRows(
             to: bongoPosMenu,
             rows: bongoPositionRows,
@@ -3706,6 +3715,11 @@ final class MenuTarget: NSObject {
     @objc func toggleBongoOverlay(_ sender: NSMenuItem) {
         guard let model else { return }
         model.toggleBongoOverlay()
+    }
+
+    @objc func toggleBongoStageDragLock(_ sender: NSMenuItem) {
+        guard let model else { return }
+        model.toggleBongoStageDragLock()
     }
 
     @objc func selectBongoCatPackBundled(_ sender: NSMenuItem) {

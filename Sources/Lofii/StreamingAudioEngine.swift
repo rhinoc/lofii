@@ -50,12 +50,18 @@ final class StreamingAudioEngine {
         let itemID: ObjectIdentifier?
         let currentTime: TimeInterval?
         let rate: Float
+        let timeControlStatus: String
         let isWaiting: Bool
         let isPlaying: Bool
         let isBufferEmpty: Bool
+        let isBufferFull: Bool
         let isLikelyToKeepUp: Bool
+        let itemStatus: String
         let itemFailed: Bool
         let errorDescription: String?
+        let playerErrorDescription: String?
+        let currentURL: String?
+        let loadedTimeRanges: String
 
         var hasItem: Bool { itemID != nil }
     }
@@ -102,6 +108,9 @@ final class StreamingAudioEngine {
             logger.info(
                 "Replace current item reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) url=\(track.streamURL.absoluteString, privacy: .public)"
             )
+            DiagnosticLog.appendPlayback(
+                "engine.replace reason=\(reason) title=\"\(track.title)\" url=\(track.streamURL.absoluteString)"
+            )
             let item = makePlayerItem(url: track.streamURL)
             player.replaceCurrentItem(with: item)
             currentTrackURL = track.streamURL
@@ -117,6 +126,9 @@ final class StreamingAudioEngine {
         logger.info(
             "Play active deck reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) replacing=\(replacingCurrentItem) seekToElapsed=\(shouldSeekToElapsed) elapsed=\(elapsed, format: .fixed(precision: 2))"
         )
+        DiagnosticLog.appendPlayback(
+            "engine.play reason=\(reason) title=\"\(track.title)\" replacing=\(replacingCurrentItem) seekToElapsed=\(shouldSeekToElapsed) elapsed=\(Self.formatSeconds(elapsed)) volume=\(volume)"
+        )
         retryGeneration &+= 1
         player.play()
         emitPlaybackState()
@@ -125,6 +137,9 @@ final class StreamingAudioEngine {
     func stop(reason: String) {
         logger.info(
             "Stop playback reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
+        )
+        DiagnosticLog.appendPlayback(
+            "engine.stop reason=\(reason) currentURL=\(currentTrackURL?.absoluteString ?? "nil")"
         )
         retryGeneration &+= 1
         activePlayer.pause()
@@ -363,12 +378,18 @@ final class StreamingAudioEngine {
             itemID: item.map { ObjectIdentifier($0) },
             currentTime: currentTime,
             rate: player.rate,
+            timeControlStatus: Self.describe(player.timeControlStatus),
             isWaiting: player.timeControlStatus == .waitingToPlayAtSpecifiedRate,
             isPlaying: player.timeControlStatus == .playing || player.rate > 0,
             isBufferEmpty: item?.isPlaybackBufferEmpty ?? false,
+            isBufferFull: item?.isPlaybackBufferFull ?? false,
             isLikelyToKeepUp: item?.isPlaybackLikelyToKeepUp ?? false,
+            itemStatus: item.map { Self.describe($0.status) } ?? "nil",
             itemFailed: item?.status == .failed,
-            errorDescription: item?.error?.localizedDescription
+            errorDescription: item?.error?.localizedDescription,
+            playerErrorDescription: player.error?.localizedDescription,
+            currentURL: currentTrackURL?.absoluteString,
+            loadedTimeRanges: Self.describeLoadedTimeRanges(item?.loadedTimeRanges)
         )
     }
 
@@ -450,6 +471,9 @@ final class StreamingAudioEngine {
             logger.error(
                 "Active item failed reason=\(reason, privacy: .public) error=\(error, privacy: .public)"
             )
+            DiagnosticLog.appendPlayback(
+                "engine.itemFailed reason=\"\(reason)\" error=\"\(error)\" url=\(currentTrackURL?.absoluteString ?? "nil")"
+            )
             onPlaybackStallDetected?("item failed: \(error)")
             emitPlaybackState()
             return
@@ -457,6 +481,9 @@ final class StreamingAudioEngine {
 
         if item.isPlaybackBufferEmpty {
             logger.info("Active item buffer empty reason=\(reason, privacy: .public)")
+            DiagnosticLog.appendPlayback(
+                "engine.bufferEmpty reason=\"\(reason)\" likely=\(item.isPlaybackLikelyToKeepUp) url=\(currentTrackURL?.absoluteString ?? "nil")"
+            )
             onPlaybackStallDetected?("buffer empty")
             emitPlaybackState()
             return
@@ -493,6 +520,39 @@ final class StreamingAudioEngine {
         }
         logger.debug("Emit playback state state=\(String(describing: state), privacy: .public)")
         onPlaybackStateChange?(state)
+    }
+
+    private static func describe(_ status: AVPlayer.TimeControlStatus) -> String {
+        switch status {
+        case .paused: return "paused"
+        case .waitingToPlayAtSpecifiedRate: return "waitingToPlayAtSpecifiedRate"
+        case .playing: return "playing"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func describe(_ status: AVPlayerItem.Status) -> String {
+        switch status {
+        case .unknown: return "unknown"
+        case .readyToPlay: return "readyToPlay"
+        case .failed: return "failed"
+        @unknown default: return "unknown"
+        }
+    }
+
+    private static func describeLoadedTimeRanges(_ ranges: [NSValue]?) -> String {
+        guard let ranges, !ranges.isEmpty else { return "[]" }
+        return ranges.map { value in
+            let range = value.timeRangeValue
+            let start = range.start.seconds
+            let duration = range.duration.seconds
+            return "[\(formatSeconds(start))+\(formatSeconds(duration))]"
+        }.joined(separator: ",")
+    }
+
+    private static func formatSeconds(_ value: TimeInterval) -> String {
+        guard value.isFinite else { return "nan" }
+        return String(format: "%.2f", value)
     }
 
     private func syncPositionIfNeeded(on player: AVPlayer, _ elapsed: TimeInterval, replacingCurrentItem: Bool) {

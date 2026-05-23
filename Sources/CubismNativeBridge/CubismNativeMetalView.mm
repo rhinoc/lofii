@@ -17,8 +17,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -30,6 +32,8 @@
 using namespace Live2D::Cubism::Framework;
 
 namespace {
+
+namespace fs = std::filesystem;
 
 CubismAllocator gCubismAllocator;
 bool gCubismFrameworkStarted = false;
@@ -140,6 +144,10 @@ public:
             modelJsonBytes.data(),
             static_cast<csmSizeInt>(modelJsonBytes.size())
         );
+        if (_modelSetting->GetJsonPointer() == nullptr)
+        {
+            return false;
+        }
 
         std::vector<csmByte> mocBytes;
         if (!ReadFileBytes(_modelDirectory + "/" + _modelSetting->GetModelFileName(), mocBytes))
@@ -157,6 +165,8 @@ public:
         _layout.Clear();
         _hasLayout = _modelSetting->GetLayoutMap(_layout);
         RebuildParameterIndexCache();
+        ConfigureAmbientBreath();
+        LogRelevantParameterRanges();
         GetModel()->SaveParameters();
         CubismEyeBlink::Delete(_eyeBlink);
         _eyeBlink = CubismEyeBlink::Create(_modelSetting);
@@ -213,32 +223,147 @@ public:
     /// Picks **one motion at random** from every motion group in `model3.json` (deduped by file path), one-shot (`SetLoop(false)`). Returns `false` while a tap motion is already playing.
     bool TryStartRandomTapMotion()
     {
+        return TryStartRandomMotion({"CAT_motion", "CAT_motion_lock", "tap", "Tap", "click", "Click"}, false);
+    }
+
+    /// Picks one idle motion when available; imported models without an idle group fall back to any recognized motion.
+    bool TryStartRandomIdleMotion()
+    {
+        return TryStartRandomMotion({"idle", "Idle"}, true);
+    }
+
+    bool TryStartRandomMotion(const std::vector<std::string>& preferredGroups, bool includeIdleDiscoveredFiles)
+    {
         if (_tapMotionBusy)
         {
+            NSLog(@"[CubismNativeMotion] start rejected: motion busy");
             return false;
         }
         if (GetModel() == nullptr || _modelSetting == nullptr || _motionManager == nullptr)
         {
+            NSLog(@"[CubismNativeMotion] start rejected: model=%@ setting=%@ manager=%@",
+                  GetModel() == nullptr ? @"nil" : @"ready",
+                  _modelSetting == nullptr ? @"nil" : @"ready",
+                  _motionManager == nullptr ? @"nil" : @"ready");
             return false;
         }
 
         CubismModelSettingJson* modelSetting = _modelSetting;
 
-        struct MotionPick
-        {
-            const csmChar* group;
-            csmInt32 index;
-            std::string path;
-        };
-
         std::vector<MotionPick> pool;
         std::unordered_set<std::string> seenPaths;
 
+        if (!preferredGroups.empty())
+        {
+            CollectDeclaredMotions(modelSetting, preferredGroups, pool, seenPaths);
+        }
+        const bool hasPreferredDeclaredMotions = !pool.empty();
+        if (pool.empty())
+        {
+            CollectDeclaredMotions(modelSetting, {}, pool, seenPaths, false);
+            if (!includeIdleDiscoveredFiles)
+            {
+                RemoveAmbientIdleMotions(pool);
+            }
+        }
+        if (!hasPreferredDeclaredMotions)
+        {
+            CollectDiscoveredMotionFiles(pool, seenPaths, includeIdleDiscoveredFiles);
+        }
+
+        if (pool.empty())
+        {
+            NSLog(@"[CubismNativeMotion] start rejected: no motions found in %s", _modelDirectory.c_str());
+            return false;
+        }
+
+        const MotionPick& choice = pool[arc4random_uniform(static_cast<uint32_t>(pool.size()))];
+        NSLog(@"[CubismNativeMotion] pool=%zu declared=%@ group=%s index=%d path=%s",
+              pool.size(),
+              choice.declared ? @"true" : @"false",
+              choice.group.c_str(),
+              static_cast<int>(choice.index),
+              choice.path.c_str());
+
+        std::vector<csmByte> motionBytes;
+        if (!ReadFileBytes(choice.path, motionBytes))
+        {
+            NSLog(@"[CubismNativeMotion] start rejected: failed to read %s", choice.path.c_str());
+            return false;
+        }
+
+        ACubismMotion* motion = nullptr;
+        if (choice.declared)
+        {
+            const csmChar* fileName = modelSetting->GetMotionFileName(choice.group.c_str(), choice.index);
+            motion = LoadMotion(
+                motionBytes.data(),
+                static_cast<csmSizeInt>(motionBytes.size()),
+                (fileName != nullptr && fileName[0] != '\0') ? fileName : choice.path.c_str(),
+                nullptr,
+                nullptr,
+                modelSetting,
+                choice.group.c_str(),
+                choice.index,
+                false);
+        }
+        else
+        {
+            motion = LoadMotion(
+                motionBytes.data(),
+                static_cast<csmSizeInt>(motionBytes.size()),
+                choice.path.c_str(),
+                nullptr,
+                nullptr,
+                nullptr,
+                nullptr,
+                -1,
+                false);
+        }
+
+        if (motion == nullptr)
+        {
+            NSLog(@"[CubismNativeMotion] start rejected: Cubism failed to load motion %s", choice.path.c_str());
+            return false;
+        }
+
+        motion->SetLoop(false);
+        motion->SetFinishedMotionHandlerAndMotionCustomData(&StaticCubismMetalModel::OnTapMotionFinished, this);
+
+        _tapMotionBusy = true;
+        _motionManager->StartMotionPriority(motion, true, 3);
+        NSLog(@"[CubismNativeMotion] started %s", choice.path.c_str());
+        return true;
+    }
+
+    struct MotionPick
+    {
+        bool declared;
+        std::string group;
+        csmInt32 index;
+        std::string path;
+    };
+
+    void CollectDeclaredMotions(
+        CubismModelSettingJson* modelSetting,
+        const std::vector<std::string>& preferredGroups,
+        std::vector<MotionPick>& pool,
+        std::unordered_set<std::string>& seenPaths,
+        bool excludeIdleGroups = false)
+    {
         const csmInt32 groupCount = modelSetting->GetMotionGroupCount();
         for (csmInt32 gi = 0; gi < groupCount; ++gi)
         {
             const csmChar* groupName = modelSetting->GetMotionGroupName(gi);
             if (groupName == nullptr)
+            {
+                continue;
+            }
+            if (!preferredGroups.empty() && !MotionGroupMatches(groupName, preferredGroups))
+            {
+                continue;
+            }
+            if (excludeIdleGroups && MotionGroupMatches(groupName, {"idle", "Idle"}))
             {
                 continue;
             }
@@ -255,46 +380,87 @@ public:
                 {
                     continue;
                 }
-                pool.push_back(MotionPick{groupName, mi, path});
+                pool.push_back(MotionPick{true, groupName, mi, path});
             }
         }
+    }
 
-        if (pool.empty())
+    void CollectDiscoveredMotionFiles(
+        std::vector<MotionPick>& pool,
+        std::unordered_set<std::string>& seenPaths,
+        bool includeIdleNamedFiles)
+    {
+        std::vector<std::string> paths;
+        std::error_code error;
+        for (fs::recursive_directory_iterator it(_modelDirectory, fs::directory_options::skip_permission_denied, error), end;
+             !error && it != end;
+             it.increment(error))
         {
-            return false;
+            if (it->is_regular_file(error) && it->path().extension() == ".json")
+            {
+                const std::string path = it->path().string();
+                if (path.size() >= 13 && path.rfind(".motion3.json") == path.size() - 13)
+                {
+                    if (!includeIdleNamedFiles && IsIdleMotionPath(path))
+                    {
+                        continue;
+                    }
+                    paths.push_back(path);
+                }
+            }
         }
+        std::sort(paths.begin(), paths.end());
 
-        const MotionPick& choice = pool[arc4random_uniform(static_cast<uint32_t>(pool.size()))];
-
-        std::vector<csmByte> motionBytes;
-        if (!ReadFileBytes(choice.path, motionBytes))
+        for (const std::string& path : paths)
         {
-            return false;
+            if (seenPaths.insert(path).second)
+            {
+                pool.push_back(MotionPick{false, "", -1, path});
+            }
         }
+    }
 
-        const csmChar* fileName = modelSetting->GetMotionFileName(choice.group, choice.index);
-        ACubismMotion* motion = LoadMotion(
-            motionBytes.data(),
-            static_cast<csmSizeInt>(motionBytes.size()),
-            (fileName != nullptr && fileName[0] != '\0') ? fileName : choice.path.c_str(),
-            nullptr,
-            nullptr,
-            modelSetting,
-            choice.group,
-            choice.index,
-            false);
+    static void RemoveAmbientIdleMotions(std::vector<MotionPick>& pool)
+    {
+        pool.erase(
+            std::remove_if(pool.begin(), pool.end(), [](const MotionPick& pick) {
+                return IsAmbientIdleMotionPath(pick.path);
+            }),
+            pool.end());
+    }
 
-        if (motion == nullptr)
+    static bool MotionGroupMatches(const std::string& groupName, const std::vector<std::string>& preferredGroups)
+    {
+        const std::string normalizedGroup = LowercaseASCII(groupName);
+        for (const std::string& preferred : preferredGroups)
         {
-            return false;
+            if (groupName == preferred || normalizedGroup == LowercaseASCII(preferred))
+            {
+                return true;
+            }
         }
+        return false;
+    }
 
-        motion->SetLoop(false);
-        motion->SetFinishedMotionHandlerAndMotionCustomData(&StaticCubismMetalModel::OnTapMotionFinished, this);
+    static bool IsIdleMotionPath(const std::string& path)
+    {
+        const std::string normalized = LowercaseASCII(fs::path(path).filename().string());
+        return normalized.rfind("idle", 0) == 0 || normalized.find("_idle") != std::string::npos;
+    }
 
-        _tapMotionBusy = true;
-        _motionManager->StartMotionPriority(motion, true, 3);
-        return true;
+    static bool IsAmbientIdleMotionPath(const std::string& path)
+    {
+        const std::string normalized = LowercaseASCII(fs::path(path).filename().string());
+        return normalized.rfind("idle_angle", 0) == 0 || normalized.rfind("idle_breath", 0) == 0;
+    }
+
+    static std::string LowercaseASCII(const std::string& value)
+    {
+        std::string result = value;
+        std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+        return result;
     }
 
     void UpdateFrame(csmFloat32 deltaTimeSeconds)
@@ -308,11 +474,6 @@ public:
         model->LoadParameters();
 
         const csmFloat32 safeDelta = std::max<csmFloat32>(0.0f, std::min<csmFloat32>(deltaTimeSeconds, 1.0f / 15.0f));
-
-        if (_motionManager != nullptr)
-        {
-            _motionManager->UpdateMotion(model, safeDelta);
-        }
 
         const csmFloat32 mouseAlpha = 1.0f - std::exp(-safeDelta * 34.0f);
         for (auto& entry : _targetParameterValues)
@@ -345,6 +506,11 @@ public:
         }
 
         model->SaveParameters();
+        if (_motionManager != nullptr)
+        {
+            _motionManager->UpdateMotion(model, safeDelta);
+        }
+        ApplyAmbientBreath(model, safeDelta);
         if (_eyeBlink != nullptr)
         {
             _eyeBlink->UpdateParameters(model, safeDelta);
@@ -566,6 +732,134 @@ private:
         _tapMotionBusy = false;
     }
 
+    void ConfigureAmbientBreath()
+    {
+        _ambientTime = 0.0f;
+        _lastAmbientBreathLogTime = -100.0f;
+        _breathParameterIndex = FindParameterIndex("ParamBreath");
+        _angleNoiseParameterIndices.clear();
+        _bodyAngleNoiseParameterIndices.clear();
+
+        for (const char* id : {"ParamAngleX", "ParamAngleY", "ParamAngleZ"})
+        {
+            const csmInt32 index = FindParameterIndex(id);
+            if (index >= 0)
+            {
+                _angleNoiseParameterIndices.push_back(index);
+            }
+        }
+        for (const char* id : {"ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ"})
+        {
+            const csmInt32 index = FindParameterIndex(id);
+            if (index >= 0)
+            {
+                _bodyAngleNoiseParameterIndices.push_back(index);
+            }
+        }
+        NSLog(@"[CubismNativeBreath] configured nativeParamBreath=%@ ambientAngleParams=%zu ambientBodyAngleParams=%zu",
+              _breathParameterIndex >= 0 ? @"true" : @"false",
+              _angleNoiseParameterIndices.size(),
+              _bodyAngleNoiseParameterIndices.size());
+    }
+
+    void LogRelevantParameterRanges()
+    {
+        CubismModel* model = GetModel();
+        if (model == nullptr)
+        {
+            return;
+        }
+
+        const char* ids[] = {
+            "ParamAngleX", "ParamAngleY", "ParamAngleZ",
+            "ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ",
+            "ParamBreath", "Param", "Param2", "Param3", "Param4", "Param5",
+            "Param6", "Param7", "Param8", "Param9", "Param10", "Param12",
+            "Param13", "Param14", "Param15", "Param16",
+            "CatParamLeftHandDown", "CatParamRightHandDown",
+            "ParamMouseLeftDown", "ParamMouseRightDown"
+        };
+        for (const char* id : ids)
+        {
+            const csmInt32 index = FindParameterIndex(id);
+            if (index < 0)
+            {
+                continue;
+            }
+            NSLog(@"[CubismNativeParam] %s min=%.3f def=%.3f max=%.3f",
+                  id,
+                  static_cast<double>(model->GetParameterMinimumValue(index)),
+                  static_cast<double>(model->GetParameterDefaultValue(index)),
+                  static_cast<double>(model->GetParameterMaximumValue(index)));
+        }
+    }
+
+    void ApplyAmbientBreath(CubismModel* model, csmFloat32 deltaTimeSeconds)
+    {
+        if (model == nullptr || deltaTimeSeconds <= 0.0f)
+        {
+            return;
+        }
+
+        _ambientTime += deltaTimeSeconds;
+        csmFloat32 breath = 0.0f;
+        bool appliedBreath = false;
+        if (_breathParameterIndex >= 0)
+        {
+            breath = 0.5f
+                + 0.45f * std::sin((_ambientTime * 2.0f * static_cast<csmFloat32>(M_PI)) / 3.2f);
+            model->SetParameterValue(_breathParameterIndex, breath, 0.7f);
+            appliedBreath = true;
+        }
+
+        for (size_t i = 0; i < _angleNoiseParameterIndices.size(); ++i)
+        {
+            const csmInt32 index = _angleNoiseParameterIndices[i];
+            const csmFloat32 value = AmbientAngleNoise(_ambientTime, i, appliedBreath);
+            model->AddParameterValue(index, value, 1.0f);
+        }
+        for (size_t i = 0; i < _bodyAngleNoiseParameterIndices.size(); ++i)
+        {
+            const csmInt32 index = _bodyAngleNoiseParameterIndices[i];
+            const csmFloat32 value = AmbientBodyAngleNoise(_ambientTime, i, appliedBreath);
+            model->AddParameterValue(index, value, 1.0f);
+        }
+
+        if (_ambientTime - _lastAmbientBreathLogTime >= 5.0f)
+        {
+            _lastAmbientBreathLogTime = _ambientTime;
+            NSLog(@"[CubismNativeBreath] tick nativeParamBreath=%@ nativeValue=%.3f ambientAngleParams=%zu ambientBodyAngleParams=%zu",
+                  appliedBreath ? @"true" : @"false",
+                  static_cast<double>(breath),
+                  _angleNoiseParameterIndices.size(),
+                  _bodyAngleNoiseParameterIndices.size());
+        }
+    }
+
+    static csmFloat32 AmbientAngleNoise(csmFloat32 time, size_t axis, bool hasBreathParameter)
+    {
+        const csmFloat32 axisOffset = static_cast<csmFloat32>(axis) * 1.713f;
+        const csmFloat32 slow = std::sin(time * (1.12f + 0.09f * axisOffset) + axisOffset);
+        const csmFloat32 slower = std::sin(time * (0.46f + 0.04f * axisOffset) + 2.4f + axisOffset * 0.5f);
+        const csmFloat32 blended = slow * 0.65f + slower * 0.35f;
+        const csmFloat32 amplitude = hasBreathParameter
+            ? (axis == 2 ? 8.0f : 14.0f)
+            : (axis == 2 ? 8.0f : 14.0f);
+        return blended * amplitude;
+    }
+
+    static csmFloat32 AmbientBodyAngleNoise(csmFloat32 time, size_t axis, bool hasBreathParameter)
+    {
+        const csmFloat32 axisOffset = static_cast<csmFloat32>(axis) * 1.411f;
+        const csmFloat32 slow = std::sin(time * (0.94f + 0.07f * axisOffset) + 0.8f + axisOffset);
+        const csmFloat32 slower = std::sin(time * (0.38f + 0.03f * axisOffset) + 1.7f + axisOffset * 0.4f);
+        const csmFloat32 blended = slow * 0.7f + slower * 0.3f;
+        const csmFloat32 amplitude = hasBreathParameter
+            ? (axis == 2 ? 5.0f : 8.0f)
+            : (axis == 2 ? 5.0f : 8.0f);
+        return blended * amplitude;
+    }
+
     void RebuildParameterIndexCache()
     {
         _parameterIndices.clear();
@@ -658,6 +952,11 @@ private:
     csmMap<csmString, csmFloat32> _layout;
     std::unordered_map<std::string, csmInt32> _parameterIndices;
     std::unordered_map<std::string, ParameterTarget> _targetParameterValues;
+    std::vector<csmInt32> _angleNoiseParameterIndices;
+    std::vector<csmInt32> _bodyAngleNoiseParameterIndices;
+    csmInt32 _breathParameterIndex = -1;
+    csmFloat32 _ambientTime = 0.0f;
+    csmFloat32 _lastAmbientBreathLogTime = -100.0f;
     bool _hasLayout = false;
     bool _tapMotionBusy = false;
 };
@@ -766,6 +1065,16 @@ private:
     }
 
     return _model->TryStartRandomTapMotion() ? YES : NO;
+}
+
+- (BOOL)tryStartRandomIdleMotion
+{
+    if (!_cubismReady || !_model)
+    {
+        return NO;
+    }
+
+    return _model->TryStartRandomIdleMotion() ? YES : NO;
 }
 
 - (CGRect)modelDrawRectForStageRect:(CGRect)stageRect

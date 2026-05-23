@@ -28,6 +28,8 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/rhinoc/lofii/main/appcast.xml</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 	<key>SUPublicEDKey</key>
 	<string>d51kQCH4mtZJdeRIwIrV9yjS4oUUzjGfVJlspBWymKI=</string>
 </dict>
