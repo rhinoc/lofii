@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.0.15</string>
+	<string>0.0.16</string>
 	<key>CFBundleVersion</key>
-	<string>0.0.15</string>
+	<string>0.0.16</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>SUAutomaticallyUpdate</key>
@@ -28,9 +28,9 @@
 	<true/>
 	<key>SUFeedURL</key>
 	<string>https://raw.githubusercontent.com/rhinoc/lofii/main/appcast.xml</string>
-	<key>SUScheduledCheckInterval</key>
-	<integer>86400</integer>
 	<key>SUPublicEDKey</key>
 	<string>d51kQCH4mtZJdeRIwIrV9yjS4oUUzjGfVJlspBWymKI=</string>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>
