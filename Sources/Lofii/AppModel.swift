@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import OSLog
 import SwiftUI
@@ -1188,7 +1189,7 @@ final class AppModel: ObservableObject {
     private static func loadBongoDesktopMaskTint() -> BongoDesktopMaskTint {
         guard let raw = UserDefaults.standard.string(forKey: bongoDesktopMaskTintKey),
               let value = BongoDesktopMaskTint(rawValue: raw)
-        else { return .modelDynamic }
+        else { return .hidden }
         return value
     }
 
@@ -1401,6 +1402,16 @@ final class AppModel: ObservableObject {
         bongoPackReloadToken &+= 1
         if bongoOverlayVisible {
             markBongoLive2DPending()
+        }
+    }
+
+    func openBongoModelsFolder() {
+        let url = BongoCatPack.userImportsRootURL()
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        } catch {
+            logger.error("Failed to open Bongo models folder: \(error.localizedDescription, privacy: .public)")
         }
     }
 

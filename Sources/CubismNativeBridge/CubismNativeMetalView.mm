@@ -89,6 +89,41 @@ bool IsBongoBinaryStyleParameterId(const std::string& parameterId)
         || parameterId == "ParamMouseRightDown";
 }
 
+bool IsMouseFollowParameterId(const std::string& parameterId)
+{
+    return parameterId == "ParamMouseX"
+        || parameterId == "ParamMouseY"
+        || parameterId == "ParamAngleX"
+        || parameterId == "ParamAngleY"
+        || parameterId == "ParamAngleZ"
+        || parameterId == "ParamEyeBallX"
+        || parameterId == "ParamEyeBallY";
+}
+
+std::string LowercaseASCII(const std::string& value)
+{
+    std::string result = value;
+    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return result;
+}
+
+bool IsRandomPulseExcludedParameterId(const std::string& parameterId)
+{
+    if (IsBongoBinaryStyleParameterId(parameterId) || IsMouseFollowParameterId(parameterId))
+    {
+        return true;
+    }
+
+    const std::string normalized = LowercaseASCII(parameterId);
+    return normalized.rfind("catparam", 0) == 0
+        || normalized.find("mouse") != std::string::npos
+        || normalized.find("keyboard") != std::string::npos
+        || normalized.find("key") != std::string::npos
+        || normalized.find("hand") != std::string::npos;
+}
+
 csmFloat32 ResolveBongoBinaryParameterValue(CubismModel* model, csmInt32 index, csmFloat32 normalized01)
 {
     if (model == nullptr || index < 0)
@@ -122,6 +157,17 @@ public:
         bool smoothing = false;
     };
 
+    struct ParameterPulse
+    {
+        csmInt32 index = -1;
+        std::string id;
+        csmFloat32 base = 0.0f;
+        csmFloat32 peak = 0.0f;
+        csmFloat32 elapsed = 0.0f;
+        csmFloat32 duration = 0.7f;
+        bool active = false;
+    };
+
     ~StaticCubismMetalModel() override
     {
         DeleteRenderer();
@@ -131,6 +177,7 @@ public:
     bool LoadAssets(const std::string& modelDirectory, const std::string& modelJSONName, csmUint32 width, csmUint32 height)
     {
         _tapMotionBusy = false;
+        _parameterPulse = ParameterPulse{};
         _modelDirectory = modelDirectory;
 
         std::vector<csmByte> modelJsonBytes;
@@ -273,8 +320,8 @@ public:
 
         if (pool.empty())
         {
-            NSLog(@"[CubismNativeMotion] start rejected: no motions found in %s", _modelDirectory.c_str());
-            return false;
+            NSLog(@"[CubismNativeMotion] no motions found in %s; trying parameter pulse", _modelDirectory.c_str());
+            return StartRandomParameterPulse();
         }
 
         const MotionPick& choice = pool[arc4random_uniform(static_cast<uint32_t>(pool.size()))];
@@ -333,6 +380,79 @@ public:
         _tapMotionBusy = true;
         _motionManager->StartMotionPriority(motion, true, 3);
         NSLog(@"[CubismNativeMotion] started %s", choice.path.c_str());
+        return true;
+    }
+
+    bool StartRandomParameterPulse()
+    {
+        CubismModel* model = GetModel();
+        if (model == nullptr)
+        {
+            return false;
+        }
+
+        std::vector<csmInt32> candidates;
+        const csmInt32 count = model->GetParameterCount();
+        for (csmInt32 i = 0; i < count; ++i)
+        {
+            const CubismIdHandle rawId = model->GetParameterId(i);
+            if (rawId == nullptr)
+            {
+                continue;
+            }
+
+            const std::string id(rawId->GetString().GetRawString());
+            if (id.empty() || IsRandomPulseExcludedParameterId(id))
+            {
+                continue;
+            }
+
+            const csmFloat32 minValue = model->GetParameterMinimumValue(i);
+            const csmFloat32 maxValue = model->GetParameterMaximumValue(i);
+            if (!std::isfinite(minValue) || !std::isfinite(maxValue) || std::abs(maxValue - minValue) <= 1e-5f)
+            {
+                continue;
+            }
+
+            candidates.push_back(i);
+        }
+
+        if (candidates.empty())
+        {
+            NSLog(@"[CubismNativePulse] start rejected: no eligible non-input parameters");
+            return false;
+        }
+
+        const csmInt32 index = candidates[arc4random_uniform(static_cast<uint32_t>(candidates.size()))];
+        const CubismIdHandle rawId = model->GetParameterId(index);
+        const std::string id = rawId == nullptr ? "" : std::string(rawId->GetString().GetRawString());
+        const csmFloat32 minValue = model->GetParameterMinimumValue(index);
+        const csmFloat32 maxValue = model->GetParameterMaximumValue(index);
+        const csmFloat32 defaultValue = model->GetParameterDefaultValue(index);
+        const csmFloat32 clampedBase = std::max(std::min(minValue, maxValue), std::min(std::max(minValue, maxValue), defaultValue));
+        const csmFloat32 lowerDistance = std::abs(clampedBase - minValue);
+        const csmFloat32 upperDistance = std::abs(maxValue - clampedBase);
+        csmFloat32 peak = arc4random_uniform(2) == 0 ? minValue : maxValue;
+        if (std::abs(peak - clampedBase) <= 1e-5f)
+        {
+            peak = upperDistance >= lowerDistance ? maxValue : minValue;
+        }
+
+        _parameterPulse.index = index;
+        _parameterPulse.id = id;
+        _parameterPulse.base = clampedBase;
+        _parameterPulse.peak = peak;
+        _parameterPulse.elapsed = 0.0f;
+        _parameterPulse.duration = 0.55f + 0.4f * (static_cast<csmFloat32>(arc4random_uniform(1000)) / 999.0f);
+        _parameterPulse.active = true;
+        _tapMotionBusy = true;
+
+        NSLog(@"[CubismNativePulse] started id=%s base=%.3f peak=%.3f duration=%.3f candidates=%zu",
+              id.c_str(),
+              static_cast<double>(_parameterPulse.base),
+              static_cast<double>(_parameterPulse.peak),
+              static_cast<double>(_parameterPulse.duration),
+              candidates.size());
         return true;
     }
 
@@ -515,6 +635,7 @@ public:
         {
             _eyeBlink->UpdateParameters(model, safeDelta);
         }
+        AdvanceParameterPulse(model, safeDelta);
         model->Update();
     }
 
@@ -836,6 +957,37 @@ private:
         }
     }
 
+    void AdvanceParameterPulse(CubismModel* model, csmFloat32 deltaTimeSeconds)
+    {
+        if (model == nullptr || !_parameterPulse.active)
+        {
+            return;
+        }
+
+        if (_parameterPulse.index < 0 || _parameterPulse.index >= model->GetParameterCount())
+        {
+            _parameterPulse = ParameterPulse{};
+            _tapMotionBusy = false;
+            return;
+        }
+
+        _parameterPulse.elapsed += std::max<csmFloat32>(0.0f, deltaTimeSeconds);
+        const csmFloat32 t = _parameterPulse.duration > 1e-5f
+            ? std::max<csmFloat32>(0.0f, std::min<csmFloat32>(1.0f, _parameterPulse.elapsed / _parameterPulse.duration))
+            : 1.0f;
+        const csmFloat32 envelope = std::sin(t * static_cast<csmFloat32>(M_PI));
+        const csmFloat32 value = _parameterPulse.base + (_parameterPulse.peak - _parameterPulse.base) * envelope;
+        model->SetParameterValue(_parameterPulse.index, value);
+
+        if (t >= 1.0f)
+        {
+            model->SetParameterValue(_parameterPulse.index, _parameterPulse.base);
+            NSLog(@"[CubismNativePulse] finished id=%s", _parameterPulse.id.c_str());
+            _parameterPulse = ParameterPulse{};
+            _tapMotionBusy = false;
+        }
+    }
+
     static csmFloat32 AmbientAngleNoise(csmFloat32 time, size_t axis, bool hasBreathParameter)
     {
         const csmFloat32 axisOffset = static_cast<csmFloat32>(axis) * 1.713f;
@@ -938,13 +1090,7 @@ private:
 
     bool IsMouseFollowParameter(const std::string& parameterId) const
     {
-        return parameterId == "ParamMouseX"
-            || parameterId == "ParamMouseY"
-            || parameterId == "ParamAngleX"
-            || parameterId == "ParamAngleY"
-            || parameterId == "ParamAngleZ"
-            || parameterId == "ParamEyeBallX"
-            || parameterId == "ParamEyeBallY";
+        return IsMouseFollowParameterId(parameterId);
     }
 
     CubismModelSettingJson* _modelSetting = nullptr;
@@ -957,6 +1103,7 @@ private:
     csmInt32 _breathParameterIndex = -1;
     csmFloat32 _ambientTime = 0.0f;
     csmFloat32 _lastAmbientBreathLogTime = -100.0f;
+    ParameterPulse _parameterPulse;
     bool _hasLayout = false;
     bool _tapMotionBusy = false;
 };

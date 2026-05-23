@@ -2557,8 +2557,8 @@ final class BongoCoordinator: ObservableObject {
         inputTickTimer = nil
     }
 
-    private static let randomIdleMotionMinInterval: TimeInterval = 35
-    private static let randomIdleMotionMaxInterval: TimeInterval = 90
+    private static let randomIdleMotionMinInterval: TimeInterval = 300
+    private static let randomIdleMotionMaxInterval: TimeInterval = 420
 
     private func scheduleRandomIdleMotionTimer() {
         cancelRandomIdleMotionTimer()

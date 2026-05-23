@@ -2219,12 +2219,14 @@ private struct SettingsOverlay: View {
                 textSize: textSize
             )
 
-            SettingsActionRow(
-                title: "Model",
-                actionTitle: "Reload Models",
+            SettingsDualActionRow(
+                title: "Custom Models",
+                primaryTitle: "Open Folder",
+                secondaryTitle: "Refresh",
                 accent: model.accent,
                 textSize: textSize,
-                action: model.reloadBongoModelsFromDisk
+                primaryAction: model.openBongoModelsFolder,
+                secondaryAction: model.reloadBongoModelsFromDisk
             )
 
             SettingsPositionGrid(
@@ -2906,6 +2908,62 @@ private struct SettingsActionRow: View {
     }
 }
 
+private struct SettingsDualActionRow: View {
+    let title: String
+    let primaryTitle: String
+    let secondaryTitle: String
+    let accent: Color
+    let textSize: CGFloat
+    let primaryAction: () -> Void
+    let secondaryAction: () -> Void
+
+    @State private var hoveringPrimary = false
+    @State private var hoveringSecondary = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            Text(title.uppercased())
+                .font(.pixel(size: textSize))
+                .foregroundStyle(.white.opacity(0.74))
+                .lineLimit(1)
+                .minimumScaleFactor(0.62)
+                .frame(width: 118, alignment: .leading)
+
+            HStack(spacing: 4) {
+                actionButton(
+                    title: primaryTitle,
+                    hovering: hoveringPrimary,
+                    action: primaryAction
+                )
+                .onHover { hoveringPrimary = $0 }
+
+                actionButton(
+                    title: secondaryTitle,
+                    hovering: hoveringSecondary,
+                    action: secondaryAction
+                )
+                .onHover { hoveringSecondary = $0 }
+            }
+        }
+        .frame(minHeight: 24)
+    }
+
+    private func actionButton(title: String, hovering: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title.uppercased())
+                .font(.pixel(size: max(9, textSize - 1)))
+                .foregroundStyle(hovering ? .white : accent)
+                .lineLimit(1)
+                .minimumScaleFactor(0.58)
+                .frame(maxWidth: .infinity, minHeight: 22)
+                .padding(.horizontal, 3)
+                .background(hovering ? Color.white.opacity(0.085) : Color.clear)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct SettingsPositionGrid<Choice: Equatable>: View {
     let title: String
     let choices: [Choice]
@@ -3250,6 +3308,13 @@ enum SettingsContextMenu {
             }
         }
         modelMenu.addItem(.separator())
+        let openModelsFolderItem = NSMenuItem(
+            title: "Open Custom Models Folder",
+            action: #selector(MenuTarget.openBongoModelsFolder(_:)),
+            keyEquivalent: ""
+        )
+        openModelsFolderItem.target = MenuTarget.shared
+        modelMenu.addItem(openModelsFolderItem)
         let reloadModelsItem = NSMenuItem(
             title: "Reload Models",
             action: #selector(MenuTarget.reloadBongoModelsFromDisk(_:)),
@@ -3741,6 +3806,11 @@ final class MenuTarget: NSObject {
     @objc func reloadBongoModelsFromDisk(_ sender: NSMenuItem) {
         guard let model else { return }
         model.reloadBongoModelsFromDisk()
+    }
+
+    @objc func openBongoModelsFolder(_ sender: NSMenuItem) {
+        guard let model else { return }
+        model.openBongoModelsFolder()
     }
 
     @objc func selectBongoStageAnchor(_ sender: NSMenuItem) {
