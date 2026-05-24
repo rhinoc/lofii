@@ -21,6 +21,9 @@ assets/*
 !assets/packs.json
 !assets/app-icon-source.png
 !assets/app-icon-transparent.png
+!assets/dmg-background.png
+!assets/dmg.DS_Store
+!assets/Applications.alias
 !assets/readme/
 !assets/readme/*.png
 !assets/readme/*.jpg
