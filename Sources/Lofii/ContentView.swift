@@ -134,25 +134,29 @@ struct WidgetRootView: View {
     @State private var volumeHideTask: Task<Void, Never>? = nil
     @State private var stationPickerOpen = false
     @State private var settingsOpen = false
-    /// Snow overlay while swapping GIF stack → `SceneView` (matches other channel-flip holds).
-    @State private var gifToVideoSnowURL: URL?
-    @State private var gifToVideoSnowOpacity: Double = 1
-    @State private var gifToVideoDarkFieldOpacity: Double = 0
-    @State private var gifToVideoSnowTask: Task<Void, Never>?
+    /// Snow overlay while swapping media stack -> `SceneView` (matches other channel-flip holds).
+    @State private var mediaToSceneSnowURL: URL?
+    @State private var mediaToSceneSnowOpacity: Double = 1
+    @State private var mediaToSceneDarkFieldOpacity: Double = 0
+    @State private var mediaToSceneSnowTask: Task<Void, Never>?
 
-    /// Shared by the top-level wheel catcher so cinematic / GIF mode can
+    /// Shared by the top-level wheel catcher so scene / media mode can
     /// adjust volume without dedicating visible UI to it.
     private func handleVolumeScrollWheel(delta: Double) {
         let next = (model.volume + delta * 0.04).clamped(to: 0...1)
         if abs(next - model.volume) > 0.0001 {
             model.volume = next
             settingsOpen = false
-            showVolume = true
+            withAnimation(.easeOut(duration: 0.14)) {
+                showVolume = true
+            }
             volumeHideTask?.cancel()
             volumeHideTask = Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_400_000_000)
                 if !Task.isCancelled {
-                    showVolume = false
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        showVolume = false
+                    }
                 }
             }
         }
@@ -181,10 +185,13 @@ struct WidgetRootView: View {
             let chromeVisible = (hovering || stationPickerOpen) && !showVolume
             let topChromeVisible = chromeVisible && !settingsOpen && !isFullscreen
             let shouldRenderMotion = model.shouldRenderStageMotion
-            // Bongo mode owns its own single Metal stage so the GIF, Live2D
+            // Bongo mode owns its own single Metal stage so media, Live2D
             // model, key overlays, and final post pass are processed together.
+            let youtubeVideoVisible = model.currentYouTubeVideoID != nil && model.visualMode == .live
+            let directVideoURL = model.currentDirectVideoURL
+            let directVideoVisible = directVideoURL != nil && model.visualMode == .live
             let bongoVisible = model.bongoOverlayVisible
-            let backgroundCRTEnabled = model.crt.enabled && !bongoVisible
+            let backgroundCRTEnabled = model.crt.enabled && !bongoVisible && !youtubeVideoVisible
             let backgroundShatteredGlass = model.shatteredGlass.resolvedForDisplayPipeline(
                 crtMasterEnabled: backgroundCRTEnabled
             )
@@ -195,12 +202,84 @@ struct WidgetRootView: View {
             let backgroundMotionBlurEnabled = backgroundCRTEnabled && model.crt.motionBlur
             let backgroundChromaticAberrationEnabled = backgroundCRTEnabled && model.crt.chromaticAberration
             let backgroundScanlinesEnabled = backgroundCRTEnabled && model.crt.scanlines
+            let youtubeEdgeFadeActive = youtubeVideoVisible && model.crt.enabled && model.crt.vignette
 
             ZStack {
                 ZStack {
+                    if let videoID = model.currentYouTubeVideoID {
+                        YouTubePlayerView(
+                            videoID: videoID,
+                            isPlaying: model.isPlaying,
+                            volume: model.volume,
+                            videoVisible: youtubeVideoVisible,
+                            onError: model.handleYouTubePlayerError,
+                            onPlaybackStateChange: model.handleYouTubePlaybackState
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(youtubeVideoVisible ? 1 : 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(!youtubeVideoVisible)
+                    }
+
                         Group {
                             switch model.visualMode {
-                            case .cinematic:
+                            case .live:
+                                if youtubeVideoVisible {
+                                    Color.clear
+                                } else if let directVideoURL, directVideoVisible, !bongoVisible {
+                                    StageMetalPlayerView(
+                                        source: .video(directVideoURL),
+                                        isPlaying: shouldRenderMotion,
+                                        curvationFactor: backgroundCurvationUniforms.factor,
+                                        curvationOverscan: backgroundCurvationUniforms.overscan,
+                                        curvationBorderSize: backgroundCurvationUniforms.border,
+                                        vignetteAlpha: backgroundVignetteAlpha,
+                                        motionBlurEnabled: backgroundMotionBlurEnabled,
+                                        motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
+                                        chromaticAberrationEnabled: backgroundChromaticAberrationEnabled,
+                                        chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
+                                        scanlinesEnabled: backgroundScanlinesEnabled,
+                                        scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
+                                        scanlineDensity: model.crt.scanlineDensity.pitch,
+                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
+                                        shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
+                                        onFirstFrameReady: {
+                                            Task { @MainActor in
+                                                model.markPrimaryVisualMediaReady()
+                                            }
+                                        }
+                                    )
+                                } else if bongoVisible {
+                                    Color(white: 0.02)
+                                } else {
+                                    TrackCoverSceneView(
+                                        track: model.currentTrack,
+                                        curvationFactor: backgroundCurvationUniforms.factor,
+                                        curvationOverscan: backgroundCurvationUniforms.overscan,
+                                        curvationBorderSize: backgroundCurvationUniforms.border,
+                                        vignetteAlpha: backgroundVignetteAlpha,
+                                        motionBlurEnabled: backgroundMotionBlurEnabled,
+                                        motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
+                                        chromaticAberrationEnabled: backgroundChromaticAberrationEnabled,
+                                        chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
+                                        scanlinesEnabled: backgroundScanlinesEnabled,
+                                        scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
+                                        scanlineDensity: model.crt.scanlineDensity.pitch,
+                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
+                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
+                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
+                                        shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
+                                        onCoverReady: {
+                                            Task { @MainActor in
+                                                model.markPrimaryVisualMediaReady()
+                                            }
+                                        }
+                                    )
+                                    .environmentObject(model)
+                                }
+                            case .scene:
                                 if !bongoVisible {
                                     SceneView(
                                         asset: model.currentScene,
@@ -232,14 +311,15 @@ struct WidgetRootView: View {
                                         endPoint: .bottom
                                     )
                                 }
-                            case .gif:
-                                if let gif = model.currentGif {
+                            case .media:
+                                if let media = model.currentVisualMedia {
                                     ZStack {
                                         if bongoVisible {
                                             Color(white: 0.02)
                                         } else {
-                                            GifSceneView(
-                                                asset: gif,
+                                            VisualMediaSceneView(
+                                                asset: media,
+                                                reloadToken: model.visualMediaReloadToken,
                                                 isPlaying: shouldRenderMotion,
                                                 curvationFactor: backgroundCurvationUniforms.factor,
                                                 curvationOverscan: backgroundCurvationUniforms.overscan,
@@ -257,59 +337,15 @@ struct WidgetRootView: View {
                                                 shatteredGlassHighlight: backgroundShatteredGlass.highlight,
                                                 shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
                                                 onAnimatedGifReady: {
-                                                    model.markPrimaryVisualMediaReady()
+                                                    Task { @MainActor in
+                                                        model.markPrimaryVisualMediaReady()
+                                                    }
                                                 }
                                             )
                                         }
                                     }
                                 } else {
-                                    SceneView(
-                                        asset: model.currentScene,
-                                        variant: model.currentVariant,
-                                        isPlaying: shouldRenderMotion,
-                                        curvationFactor: backgroundCurvationUniforms.factor,
-                                        curvationOverscan: backgroundCurvationUniforms.overscan,
-                                        curvationBorderSize: backgroundCurvationUniforms.border,
-                                        vignetteAlpha: backgroundVignetteAlpha,
-                                        motionBlurEnabled: backgroundMotionBlurEnabled,
-                                        motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
-                                        chromaticAberrationEnabled: backgroundChromaticAberrationEnabled,
-                                        chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
-                                        scanlinesEnabled: backgroundScanlinesEnabled,
-                                        scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
-                                        scanlineDensity: model.crt.scanlineDensity.pitch,
-                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
-                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
-                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
-                                        shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX
-                                    )
-                                }
-                            case .cover:
-                                if bongoVisible {
                                     Color(white: 0.02)
-                                } else {
-                                    TrackCoverSceneView(
-                                        track: model.currentTrack,
-                                        curvationFactor: backgroundCurvationUniforms.factor,
-                                        curvationOverscan: backgroundCurvationUniforms.overscan,
-                                        curvationBorderSize: backgroundCurvationUniforms.border,
-                                        vignetteAlpha: backgroundVignetteAlpha,
-                                        motionBlurEnabled: backgroundMotionBlurEnabled,
-                                        motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
-                                        chromaticAberrationEnabled: backgroundChromaticAberrationEnabled,
-                                        chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
-                                        scanlinesEnabled: backgroundScanlinesEnabled,
-                                        scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
-                                        scanlineDensity: model.crt.scanlineDensity.pitch,
-                                        shatteredGlassOpacity: backgroundShatteredGlass.opacity,
-                                        shatteredGlassRefraction: backgroundShatteredGlass.refraction,
-                                        shatteredGlassHighlight: backgroundShatteredGlass.highlight,
-                                        shatteredGlassFlipX: model.shatteredGlass.resolvedFlipX,
-                                        onCoverReady: {
-                                            model.markPrimaryVisualMediaReady()
-                                        }
-                                    )
-                                    .environmentObject(model)
                                 }
                             }
                         }
@@ -318,6 +354,8 @@ struct WidgetRootView: View {
                         if bongoVisible {
                             BongoView(
                                 isPlaying: shouldRenderMotion,
+                                rendersVisualBackground: !youtubeVideoVisible,
+                                appliesCRT: !youtubeVideoVisible,
                                 artworkScrollWheel: handleVolumeScrollWheel,
                                 artworkContextMenu: { [weak model] in
                                     guard let model else { return NSMenu() }
@@ -326,21 +364,29 @@ struct WidgetRootView: View {
                             )
                         }
 
+                        if youtubeEdgeFadeActive {
+                            YouTubeEdgeFadeOverlay(
+                                strength: model.crt.vignetteStrength,
+                                cornerRadius: isFullscreen ? 0 : model.widgetWindowContentCornerRadius
+                            )
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .allowsHitTesting(false)
+                        }
+
                         if !model.visualStageReady,
-                           model.bongoOverlayVisible || model.visualMode == .gif || model.visualMode == .cover,
-                           !(bongoVisible && model.visualMode == .cover) {
+                           bongoVisible || model.visualMode == .media || model.visualMode == .live {
                             WorkspaceSnowLoadingCover()
                         }
 
-                        if let gifToVideoSnowURL {
-                            SnowOverlayView(url: gifToVideoSnowURL)
-                                .opacity(gifToVideoSnowOpacity)
+                        if let mediaToSceneSnowURL {
+                            SnowOverlayView(url: mediaToSceneSnowURL)
+                                .opacity(mediaToSceneSnowOpacity)
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                                 .allowsHitTesting(false)
                         }
 
                         Color.black
-                            .opacity(gifToVideoDarkFieldOpacity)
+                            .opacity(mediaToSceneDarkFieldOpacity)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .allowsHitTesting(false)
 
@@ -362,16 +408,16 @@ struct WidgetRootView: View {
                         }
                     }
                     .onChange(of: model.visualMode) { oldValue, newValue in
-                        gifToVideoSnowTask?.cancel()
-                        gifToVideoSnowTask = nil
-                        if oldValue == .gif, newValue == .cinematic {
-                            gifToVideoSnowOpacity = 0
-                            gifToVideoSnowURL = GifCache.bundledSnowOverlayURL()
-                            gifToVideoSnowTask = Task { @MainActor in
-                                defer { gifToVideoSnowTask = nil }
-                                TransitionSnowStyle.fadeInSnowOpacity { gifToVideoSnowOpacity = $0 }
+                        mediaToSceneSnowTask?.cancel()
+                        mediaToSceneSnowTask = nil
+                        if oldValue == .media, newValue == .scene {
+                            mediaToSceneSnowOpacity = 0
+                            mediaToSceneSnowURL = GifCache.bundledSnowOverlayURL()
+                            mediaToSceneSnowTask = Task { @MainActor in
+                                defer { mediaToSceneSnowTask = nil }
+                                TransitionSnowStyle.fadeInSnowOpacity { mediaToSceneSnowOpacity = $0 }
                                 if let pick = await GifCache.shared.randomCachedStatic() {
-                                    gifToVideoSnowURL = pick
+                                    mediaToSceneSnowURL = pick
                                 }
                                 try? await Task.sleep(
                                     nanoseconds: UInt64(
@@ -379,19 +425,19 @@ struct WidgetRootView: View {
                                     )
                                 )
                                 guard !Task.isCancelled else { return }
-                                guard model.visualMode == .cinematic else { return }
+                                guard model.visualMode == .scene else { return }
                                 await TransitionSnowStyle.darkFieldCoverThenClearSnow(
-                                    setDarkField: { gifToVideoDarkFieldOpacity = $0 },
-                                    clearSnowURL: { gifToVideoSnowURL = nil },
-                                    resetSnowOpacity: { gifToVideoSnowOpacity = 1 }
+                                    setDarkField: { mediaToSceneDarkFieldOpacity = $0 },
+                                    clearSnowURL: { mediaToSceneSnowURL = nil },
+                                    resetSnowOpacity: { mediaToSceneSnowOpacity = 1 }
                                 )
                             }
-                        } else if newValue != .cinematic {
-                            gifToVideoSnowTask?.cancel()
-                            gifToVideoSnowTask = nil
-                            gifToVideoDarkFieldOpacity = 0
-                            gifToVideoSnowOpacity = 1
-                            gifToVideoSnowURL = nil
+                        } else if newValue != .scene {
+                            mediaToSceneSnowTask?.cancel()
+                            mediaToSceneSnowTask = nil
+                            mediaToSceneDarkFieldOpacity = 0
+                            mediaToSceneSnowOpacity = 1
+                            mediaToSceneSnowURL = nil
                         }
                     }
 
@@ -494,14 +540,15 @@ struct WidgetRootView: View {
                     .transition(.opacity)
                 }
 
-                if showVolume {
-                    // Centered pill — chrome is hidden while we're up so we
-                    // can dominate the frame without worrying about the dock
-                    // or badge underneath.
-                    VolumeOverlay(volume: model.volume, accent: model.accent)
-                        .transition(.opacity.combined(with: .scale(scale: 0.96)))
-                        .allowsHitTesting(false)
-                }
+                // Centered pill — chrome is hidden while we're up so we
+                // can dominate the frame without worrying about the dock
+                // or badge underneath. Keep the view mounted so the
+                // dismissal animates instead of being removed in one frame.
+                VolumeOverlay(volume: model.volume, accent: model.accent)
+                    .opacity(showVolume ? 1 : 0)
+                    .scaleEffect(showVolume ? 1 : 0.96)
+                    .animation(.easeOut(duration: 0.14), value: showVolume)
+                    .allowsHitTesting(false)
 
                 if settingsOpen && !showVolume {
                     SettingsOverlay(
@@ -544,6 +591,87 @@ struct WidgetRootView: View {
         if let window = NSApp.keyWindow ?? NSApp.windows.first(where: { !($0 is NSPanel) }) {
             isFullscreen = window.styleMask.contains(.fullScreen)
         }
+    }
+}
+
+private struct YouTubeEdgeFadeOverlay: View {
+    let strength: VignetteStrength
+    let cornerRadius: CGFloat
+    private let hardEdgeThickness: CGFloat = 1
+    // SwiftUI's rounded-rect path is circular, while the window layer uses
+    // `.continuous`; this factor visually lines the overlay up with the
+    // clipped window corner without changing the actual window radius.
+    private let overlayCornerVisualScale: CGFloat = 1.33
+
+    private var opacity: Double {
+        switch strength {
+        case .subtle: return 0.24
+        case .balanced: return 0.34
+        case .strong: return 0.46
+        }
+    }
+
+    private var widthFraction: CGFloat {
+        switch strength {
+        case .subtle: return 0.018
+        case .balanced: return 0.024
+        case .strong: return 0.030
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let effectiveCornerRadius = cornerRadius * overlayCornerVisualScale
+            let radiusBound = effectiveCornerRadius > 0 ? max(effectiveCornerRadius * 0.62, 4) : 8
+            let edgeWidth = min(max(min(geo.size.width, geo.size.height) * widthFraction, 4), radiusBound)
+            let layers = max(Int(edgeWidth.rounded(.up)), 1)
+
+            ZStack {
+                RoundedEdgeFadeBand(inset: 0, thickness: hardEdgeThickness, cornerRadius: effectiveCornerRadius)
+                    .fill(.black.opacity(0.62), style: FillStyle(eoFill: true))
+
+                ForEach(0..<layers, id: \.self) { index in
+                    let progress = Double(index) / Double(max(layers - 1, 1))
+                    let falloff = pow(1 - progress, 1.85)
+                    let inset = CGFloat(index) + hardEdgeThickness
+                    RoundedEdgeFadeBand(inset: inset, thickness: 1, cornerRadius: effectiveCornerRadius)
+                        .fill(.black.opacity(opacity * falloff), style: FillStyle(eoFill: true))
+                }
+            }
+        }
+    }
+}
+
+private struct RoundedEdgeFadeBand: Shape {
+    let inset: CGFloat
+    let thickness: CGFloat
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let limit = max(min(rect.width, rect.height) / 2, 0)
+        let outerInset = min(max(inset, 0), limit)
+        let innerInset = min(max(inset + thickness, 0), limit)
+        let outer = rect.insetBy(dx: outerInset, dy: outerInset)
+        let inner = rect.insetBy(dx: innerInset, dy: innerInset)
+
+        var path = Path()
+        guard outer.width > 0, outer.height > 0 else { return path }
+
+        let outerRadius = max(cornerRadius - outerInset, 0)
+        path.addRoundedRect(
+            in: outer,
+            cornerSize: CGSize(width: outerRadius, height: outerRadius)
+        )
+
+        if inner.width > 0, inner.height > 0 {
+            let innerRadius = max(cornerRadius - innerInset, 0)
+            path.addRoundedRect(
+                in: inner,
+                cornerSize: CGSize(width: innerRadius, height: innerRadius)
+            )
+        }
+
+        return path
     }
 }
 
@@ -594,20 +722,26 @@ private struct TopChrome: View {
                 glyph: model.visualMode.glyph,
                 action: model.toggleVisualMode
             )
-            .help("Visual mode: \(model.visualMode.label)")
+            .help("View mode: \(model.visualMode.label)")
 
-            if model.visualMode == .cinematic {
+            if model.visualMode == .scene {
+                IconChromeButton(
+                    glyph: model.currentScene.glyph,
+                    action: model.nextScene
+                )
+                .help("Scene: \(model.currentScene.displayName)")
+
                 IconChromeButton(
                     glyph: model.currentVariant.glyph,
                     action: model.cycleVariant
                 )
                 .help("Variant: \(model.currentVariant.label)")
-            } else if model.visualMode == .gif {
+            } else if model.visualMode == .media {
                 IconChromeButton(
                     glyph: .shuffle,
-                    action: model.nextGif
+                    action: model.nextVisualMedia
                 )
-                .help("Next GIF (G)")
+                .help("Next media (G)")
             }
 
             Spacer(minLength: 0)
@@ -618,7 +752,7 @@ private struct TopChrome: View {
             // only ever shows prev/play/next + the current station name in
             // the badge below.
             IconChromeButton(
-                glyph: .radioSignal,
+                glyph: .radio,
                 tint: stationPickerOpen ? model.accent : nil,
                 action: { stationPickerOpen.toggle() }
             )
@@ -636,7 +770,7 @@ private struct TopChrome: View {
             .help("Settings")
 
             IconChromeButton(
-                glyph: .pin,
+                glyph: .anchor,
                 tint: model.alwaysOnTop ? model.accent : nil,
                 action: { model.alwaysOnTop.toggle() }
             )
@@ -658,6 +792,15 @@ private struct TopChrome: View {
 /// the white pixel text into illegibility.
 private struct StationPicker: View {
     @EnvironmentObject private var model: AppModel
+    @State private var editorMode: StationEditorMode?
+    @State private var name = ""
+    @State private var url = ""
+    @State private var iconID = PixelGlyph.headphone.stableID
+    @State private var builtInIconChoice: PixelGlyph?
+    @State private var themeColorHex = StationThemeColor.pink.hex
+    @State private var errorMessage: String?
+    @State private var deleteCandidate: LofiiPreset?
+    @State private var isSavingStation = false
 
     private let columns = [
         GridItem(.flexible(), spacing: 6),
@@ -665,63 +808,815 @@ private struct StationPicker: View {
     ]
 
     var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 8) {
+                Text("STATIONS")
+                    .font(.pixel(size: 13))
+                    .kerning(1.2)
+                    .foregroundStyle(.white.opacity(0.84))
+
+                Spacer(minLength: 0)
+
+                Button {
+                    beginAdd()
+                } label: {
+                    Text("+")
+                        .font(.pixel(size: 18))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.accent)
+                .help("Add station")
+            }
+
+            if editorMode != nil {
+                editor
+            } else if let deleteCandidate {
+                deleteConfirmation(deleteCandidate)
+            } else {
+                stationList
+            }
+        }
+        .padding(12)
+        .frame(width: 340)
+        // Force a dark, opaque base so the system's translucent popover
+        // material doesn't bleed through and grey out our text.
+        .background(Color(red: 0.06, green: 0.06, blue: 0.08))
+        .presentationBackground(Color(red: 0.06, green: 0.06, blue: 0.08))
+    }
+
+    @ViewBuilder
+    private var stationList: some View {
+        let maxVisibleStations = 6
+
+        if model.presets.count <= maxVisibleStations {
+            stationGrid
+        } else {
+            ScrollView(.vertical, showsIndicators: false) {
+                stationGrid
+            }
+            .frame(maxHeight: 118)
+        }
+    }
+
+    private var stationGrid: some View {
         LazyVGrid(columns: columns, spacing: 6) {
             ForEach(Array(model.presets.enumerated()), id: \.element.id) { index, preset in
-                let selected = index == model.selectedIndex
-                Button {
-                    model.selectPreset(at: index)
-                } label: {
-                    HStack(spacing: 8) {
-                        PixelIcon(preset.scene.glyph, size: 12)
-                            .foregroundStyle(selected ? .black : preset.scene.palette.accent)
-                            .frame(width: 20, height: 20)
+                stationRow(index: index, preset: preset)
+            }
+        }
+    }
+
+    private var editorIconChoices: [PixelGlyph] {
+        var choices = PixelGlyph.customStationIconChoices
+        if let builtInIconChoice,
+           !choices.contains(where: { $0 == builtInIconChoice }) {
+            choices.insert(builtInIconChoice, at: 0)
+        }
+        return choices
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(editorMode?.title ?? "")
+                .font(.pixel(size: 13))
+                .foregroundStyle(.white.opacity(0.9))
+
+            StationEditorTextField(
+                identity: "station-editor-youtube-link",
+                placeholder: "Station URL",
+                text: $url
+            )
+                .id("station-editor-youtube-link")
+                .frame(height: 16)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .background(Rectangle().fill(Color.white.opacity(0.10)))
+
+            StationEditorTextField(
+                identity: "station-editor-name",
+                placeholder: "Name",
+                text: $name
+            )
+                .id("station-editor-name")
+                .frame(height: 16)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 6)
+                .background(Rectangle().fill(Color.white.opacity(0.10)))
+
+            pickerRow(label: "ICON") {
+                ForEach(editorIconChoices, id: \.stableID) { glyph in
+                    Button {
+                        iconID = glyph.stableID
+                    } label: {
+                        PixelIcon(glyph, size: 12)
+                            .foregroundStyle(Color(hex: themeColorHex) ?? model.accent)
+                            .frame(width: 17, height: 17)
                             .background(
-                                Rectangle().fill(
-                                    selected
-                                        ? preset.scene.palette.accent
-                                        : Color.white.opacity(0.10)
+                                Rectangle().fill(Color.white.opacity(0.10))
+                            )
+                            .overlay(
+                                Rectangle().stroke(
+                                    iconID == glyph.stableID ? .white : Color.white.opacity(0.18),
+                                    lineWidth: iconID == glyph.stableID ? 2 : 1
                                 )
                             )
+                    }
+                    .buttonStyle(.plain)
+                    .help(glyph.stableID)
+                }
+            }
 
+            pickerRow(label: "COLOR") {
+                ForEach(StationThemeColor.allCases) { themeColor in
+                    Button {
+                        themeColorHex = themeColor.hex
+                    } label: {
+                        Rectangle()
+                            .fill(themeColor.color)
+                            .frame(width: 17, height: 17)
+                            .overlay(
+                                Rectangle().stroke(
+                                    themeColorHex == themeColor.hex ? .white : Color.white.opacity(0.18),
+                                    lineWidth: themeColorHex == themeColor.hex ? 2 : 1
+                                )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help(themeColor.label)
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.pixel(size: 12))
+                    .foregroundStyle(.red.opacity(0.9))
+            }
+
+            HStack(spacing: 10) {
+                if case .builtIn(let presetID) = editorMode,
+                   model.builtInOverride(forPresetID: presetID) != nil {
+                    Button("Reset") {
+                        model.resetBuiltInStation(presetID: presetID)
+                        clearEditor()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.pixel(size: 12))
+                    .foregroundStyle(.red.opacity(0.82))
+                }
+
+                if case .custom(let id) = editorMode,
+                   let preset = model.presets.first(where: { $0.customStationID == id }) {
+                    Button("Delete") {
+                        deleteCandidate = preset
+                        editorMode = nil
+                    }
+                    .buttonStyle(.plain)
+                    .font(.pixel(size: 12))
+                    .foregroundStyle(.red.opacity(0.82))
+                }
+
+                Spacer(minLength: 0)
+                Button("Cancel") {
+                    clearEditor()
+                }
+                .buttonStyle(.plain)
+                .font(.pixel(size: 12))
+                .foregroundStyle(.white.opacity(0.72))
+
+                Button("Save") {
+                    saveEditor()
+                }
+                .disabled(isSavingStation)
+                .buttonStyle(.plain)
+                .font(.pixel(size: 12))
+                .foregroundStyle(isSavingStation ? .white.opacity(0.36) : model.accent)
+            }
+        }
+        .padding(8)
+        .background(Rectangle().fill(Color.white.opacity(0.04)))
+        .overlay(Rectangle().stroke(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    private func pickerRow<Content: View>(
+        label: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text(label)
+                .font(.pixel(size: 12))
+                .foregroundStyle(.white.opacity(0.62))
+                .frame(width: 42, height: 17, alignment: .leading)
+
+            HStack(spacing: 4) {
+                content()
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func stationRow(index: Int, preset: LofiiPreset) -> some View {
+        StationPickerRow(
+            preset: preset,
+            selected: index == model.selectedIndex,
+            select: {
+                model.selectPreset(at: index)
+            },
+            edit: {
+                beginEdit(preset)
+            }
+        )
+    }
+
+    private func deleteConfirmation(_ preset: LofiiPreset) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("DELETE \(preset.displayName.uppercased())?")
+                .font(.pixel(size: 13))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(2)
+
+            HStack {
+                Spacer(minLength: 0)
+                Button("Cancel") {
+                    deleteCandidate = nil
+                }
+                .buttonStyle(.plain)
+                .font(.pixel(size: 12))
+                .foregroundStyle(.white.opacity(0.72))
+
+                Button("Delete") {
+                    if let id = preset.customStationID {
+                        model.deleteCustomStation(id: id)
+                    }
+                    deleteCandidate = nil
+                }
+                .buttonStyle(.plain)
+                .font(.pixel(size: 12))
+                .foregroundStyle(.red.opacity(0.9))
+            }
+        }
+        .padding(8)
+        .background(Rectangle().fill(Color.white.opacity(0.04)))
+        .overlay(Rectangle().stroke(Color.white.opacity(0.10), lineWidth: 1))
+    }
+
+    private func beginAdd() {
+        editorMode = .add
+        name = ""
+        url = ""
+        iconID = PixelGlyph.headphone.stableID
+        builtInIconChoice = nil
+        themeColorHex = StationThemeColor.pink.hex
+        errorMessage = nil
+        deleteCandidate = nil
+    }
+
+    private func beginEdit(_ preset: LofiiPreset) {
+        if let customID = preset.customStationID,
+           let station = model.customStations.first(where: { $0.id == customID }) {
+            editorMode = .custom(customID)
+            name = station.name
+            url = station.url
+            iconID = station.iconID
+            builtInIconChoice = nil
+            themeColorHex = StationThemeColor.validatedHex(station.themeColorHex)
+        } else {
+            editorMode = .builtIn(preset.id)
+            builtInIconChoice = preset.pickerGlyph
+            if let station = model.builtInOverride(forPresetID: preset.id) {
+                name = station.name
+                url = station.url
+                iconID = station.iconID
+                themeColorHex = StationThemeColor.validatedHex(station.themeColorHex)
+            } else {
+                name = preset.displayName
+                url = ""
+                iconID = preset.pickerGlyph.stableID
+                themeColorHex = StationThemeColor.nearest(to: preset.pickerAccent).hex
+            }
+        }
+        errorMessage = nil
+        deleteCandidate = nil
+    }
+
+    private func clearEditor() {
+        editorMode = nil
+        name = ""
+        url = ""
+        iconID = PixelGlyph.headphone.stableID
+        builtInIconChoice = nil
+        themeColorHex = StationThemeColor.pink.hex
+        errorMessage = nil
+        isSavingStation = false
+    }
+
+    private func saveEditor() {
+        guard !isSavingStation else { return }
+        isSavingStation = true
+        errorMessage = nil
+        Task {
+            do {
+                switch editorMode {
+                case .add:
+                    try await model.addCustomStation(
+                        name: name,
+                        url: url,
+                        iconID: iconID,
+                        themeColorHex: themeColorHex
+                    )
+                case .custom(let id):
+                    try await model.updateCustomStation(
+                        id: id,
+                        name: name,
+                        url: url,
+                        iconID: iconID,
+                        themeColorHex: themeColorHex
+                    )
+                case .builtIn(let presetID):
+                    try await model.updateBuiltInStation(
+                        presetID: presetID,
+                        name: name,
+                        url: url,
+                        iconID: iconID,
+                        themeColorHex: themeColorHex
+                    )
+                case nil:
+                    isSavingStation = false
+                    return
+                }
+                clearEditor()
+            } catch {
+                isSavingStation = false
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct StationPickerRow: View {
+    let preset: LofiiPreset
+    let selected: Bool
+    let select: () -> Void
+    let edit: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        let accent = preset.pickerAccent
+
+        ZStack(alignment: .trailing) {
+            Button(action: select) {
+                HStack(spacing: 8) {
+                    PixelIcon(preset.pickerGlyph, size: 12)
+                        .foregroundStyle(accent)
+                        .frame(width: 20, height: 20)
+                        .background(
+                            Rectangle().fill(Color.white.opacity(0.10))
+                        )
+
+                    VStack(alignment: .leading, spacing: 1) {
                         Text(preset.displayName.uppercased())
                             .font(.pixel(size: 13))
                             .kerning(0.5)
                             .foregroundStyle(selected ? .white : .white.opacity(0.92))
                             .lineLimit(1)
                             .truncationMode(.tail)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if preset.radio.source.isYouTube {
+                            Text("YOUTUBE")
+                                .font(.pixel(size: 9))
+                                .foregroundStyle(.white.opacity(0.46))
+                                .lineLimit(1)
+                        }
                     }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(
-                        // Sharp 1px-style fill (no rounded corners, no blur)
-                        // so the row reads as pixel/CRT chrome rather than
-                        // a soft macOS list cell.
-                        Rectangle().fill(
-                            selected
-                                ? preset.scene.palette.accent.opacity(0.22)
-                                : Color.white.opacity(0.04)
-                        )
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Color.clear
+                        .frame(width: 18, height: 20)
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, preset.radio.source.isYouTube ? 4 : 6)
+                .background(
+                    Rectangle().fill(
+                        selected
+                            ? accent.opacity(0.22)
+                            : Color.white.opacity(hovering ? 0.07 : 0.04)
                     )
-                    .overlay(
-                        Rectangle().stroke(
-                            selected
-                                ? preset.scene.palette.accent
-                                : Color.white.opacity(0.10),
-                            lineWidth: 1
-                        )
+                )
+                .overlay(
+                    Rectangle().stroke(
+                        selected
+                            ? accent
+                            : Color.white.opacity(hovering ? 0.22 : 0.10),
+                        lineWidth: 1
                     )
-                    .contentShape(Rectangle())
+                )
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if hovering {
+                Button(action: edit) {
+                    PixelIcon(.sliders, size: 11)
+                        .frame(width: 16, height: 20)
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.72))
+                .help("Edit station")
+                .padding(.trailing, 7)
+                .transition(.opacity)
             }
         }
-        .padding(12)
-        .frame(width: 320)
-        // Force a dark, opaque base so the system's translucent popover
-        // material doesn't bleed through and grey out our text.
-        .background(Color(red: 0.06, green: 0.06, blue: 0.08))
-        .presentationBackground(Color(red: 0.06, green: 0.06, blue: 0.08))
+        .onHover { hovering = $0 }
+    }
+}
+
+private enum StationEditorMode: Equatable {
+    case add
+    case custom(UUID)
+    case builtIn(String)
+
+    var title: String {
+        switch self {
+        case .add: return "ADD STATION"
+        case .custom: return "EDIT STATION"
+        case .builtIn: return "EDIT STATION SOURCE"
+        }
+    }
+}
+
+private struct StationEditorTextField: NSViewRepresentable {
+    let identity: String
+    let placeholder: String
+    @Binding var text: String
+
+    func makeNSView(context: Context) -> StationTextInputView {
+        let view = StationTextInputView()
+        view.identifier = NSUserInterfaceItemIdentifier(identity)
+        view.placeholder = placeholder
+        view.onTextChanged = { value in
+            context.coordinator.setText(value)
+        }
+        view.setTextFromBinding(text)
+        return view
+    }
+
+    func updateNSView(_ view: StationTextInputView, context: Context) {
+        view.identifier = NSUserInterfaceItemIdentifier(identity)
+        view.placeholder = placeholder
+        view.onTextChanged = { value in
+            context.coordinator.setText(value)
+        }
+        view.setTextFromBinding(text)
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            _text = text
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            text = field.stringValue
+        }
+
+        func setText(_ value: String) {
+            text = value
+        }
+    }
+}
+
+private final class StationTextInputView: NSView, NSTextViewDelegate {
+    private let scrollView = NSScrollView()
+    private let textView = StationSingleLineTextView()
+    private let placeholderLabel = NSTextField(labelWithString: "")
+
+    var onTextChanged: ((String) -> Void)?
+    var placeholder: String = "" {
+        didSet {
+            placeholderLabel.attributedStringValue = placeholderString
+            updatePlaceholderVisibility()
+        }
+    }
+
+    var text: String {
+        get { textView.string }
+        set {
+            setText(newValue)
+        }
+    }
+
+    func setTextFromBinding(_ newValue: String) {
+        guard window?.firstResponder !== textView else { return }
+        setText(newValue)
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+
+        textView.delegate = self
+        textView.onFocusChanged = { [weak self] focused in
+            guard let self else { return }
+            if focused, self.textView.string.isEmpty {
+                self.textView.setSelectedRange(NSRange(location: 0, length: 0))
+                self.textView.needsDisplay = true
+            }
+            self.updatePlaceholderVisibility()
+        }
+        textView.drawsBackground = false
+        textView.isEditable = true
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasHorizontalScroller = false
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.verticalScrollElasticity = .none
+        scrollView.horizontalScrollElasticity = .none
+        scrollView.documentView = textView
+
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.textContainer?.heightTracksTextView = true
+        textView.textContainer?.widthTracksTextView = false
+        textView.textContainer?.containerSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isHorizontallyResizable = true
+        textView.isVerticallyResizable = false
+        textView.insertionPointColor = .white
+        textView.selectedTextAttributes = [
+            .backgroundColor: NSColor.white.withAlphaComponent(0.24),
+            .foregroundColor: NSColor.white,
+        ]
+        applyTextAttributes()
+
+        placeholderLabel.isEditable = false
+        placeholderLabel.isSelectable = false
+        placeholderLabel.drawsBackground = false
+        placeholderLabel.lineBreakMode = .byTruncatingTail
+        placeholderLabel.attributedStringValue = placeholderString
+
+        addSubview(scrollView)
+        addSubview(placeholderLabel)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func layout() {
+        super.layout()
+        let font = Self.pixelNSFont
+        let textHeight = ceil(font.ascender - font.descender + font.leading)
+        let y = floor((bounds.height - textHeight) / 2)
+        let rect = NSRect(x: 0, y: max(0, y), width: bounds.width, height: textHeight + 2)
+        scrollView.frame = rect
+        placeholderLabel.frame = rect
+        updateTextViewWidth()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(textView)
+        if textView.string.isEmpty {
+            textView.setSelectedRange(NSRange(location: 0, length: 0))
+            textView.needsDisplay = true
+        }
+        textView.mouseDown(with: event)
+    }
+
+    func textDidChange(_ notification: Notification) {
+        updateTextViewWidth()
+        scrollSelectionToVisible()
+        updatePlaceholderVisibility()
+        onTextChanged?(textView.string)
+    }
+
+    func textView(
+        _ textView: NSTextView,
+        shouldChangeTextIn affectedCharRange: NSRange,
+        replacementString: String?
+    ) -> Bool {
+        guard let replacementString else { return true }
+        return !replacementString.contains(where: { $0.isNewline })
+    }
+
+    private func applyTextAttributes() {
+        textView.font = Self.pixelNSFont
+        textView.textColor = .white
+        textView.insertionPointColor = .white
+        textView.typingAttributes = [
+            .font: Self.pixelNSFont,
+            .foregroundColor: NSColor.white,
+        ]
+    }
+
+    private func setText(_ newValue: String) {
+        guard textView.string != newValue else { return }
+        textView.string = newValue
+        applyTextAttributes()
+        updateTextViewWidth()
+        scrollSelectionToVisible()
+        updatePlaceholderVisibility()
+    }
+
+    private func updateTextViewWidth() {
+        let font = textView.font ?? Self.pixelNSFont
+        let textWidth = ceil((textView.string as NSString).size(withAttributes: [.font: font]).width)
+        let viewportWidth = max(scrollView.contentSize.width, bounds.width)
+        let width = max(viewportWidth, textWidth + 12)
+        let height = max(scrollView.contentSize.height, textView.frame.height)
+        textView.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        textView.textContainer?.containerSize = NSSize(
+            width: width,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+    }
+
+    private func scrollSelectionToVisible() {
+        textView.scrollRangeToVisible(textView.selectedRange())
+    }
+
+    private func updatePlaceholderVisibility() {
+        placeholderLabel.isHidden = !textView.string.isEmpty || window?.firstResponder === textView
+    }
+
+    private var placeholderString: NSAttributedString {
+        NSAttributedString(
+            string: placeholder,
+            attributes: [
+                .foregroundColor: NSColor.white.withAlphaComponent(0.38),
+                .font: Self.pixelNSFont,
+            ]
+        )
+    }
+
+    private static var pixelNSFont: NSFont {
+        NSFont(name: PixelFont.familyName, size: 12) ?? .systemFont(ofSize: 12)
+    }
+}
+
+private final class StationSingleLineTextView: NSTextView {
+    var onFocusChanged: ((Bool) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        true
+    }
+
+    override func insertNewline(_ sender: Any?) {}
+
+    override func mouseDown(with event: NSEvent) {
+        super.mouseDown(with: event)
+        if string.isEmpty {
+            setSelectedRange(NSRange(location: 0, length: 0))
+            needsDisplay = true
+        }
+        revealSelection()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard window?.firstResponder === self else {
+            return super.performKeyEquivalent(with: event)
+        }
+        return handleCommandShortcut(event) || super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if handleCommandShortcut(event) {
+            return
+        }
+        super.keyDown(with: event)
+        revealSelection()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        insertionPointColor = .white
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            if string.isEmpty {
+                setSelectedRange(NSRange(location: 0, length: 0))
+                needsDisplay = true
+            }
+            revealSelection()
+            onFocusChanged?(true)
+        }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let accepted = super.resignFirstResponder()
+        if accepted {
+            insertionPointColor = .clear
+            collapseSelectionAfterBlur()
+            invalidateInputVisualState()
+            onFocusChanged?(false)
+        }
+        return accepted
+    }
+
+    override func drawInsertionPoint(in rect: NSRect, color: NSColor, turnedOn flag: Bool) {
+        guard flag, isCurrentFirstResponder else {
+            setNeedsDisplay(rect)
+            return
+        }
+
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let pixel = 1 / scale
+        let crispRect = NSRect(
+            x: floor(rect.minX * scale) / scale,
+            y: floor(rect.minY * scale) / scale,
+            width: pixel * 2,
+            height: max(pixel, floor(rect.height * scale) / scale)
+        )
+
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            NSColor.white.setFill()
+            crispRect.fill()
+            return
+        }
+
+        context.saveGState()
+        context.setShouldAntialias(false)
+        context.setFillColor(NSColor.white.cgColor)
+        context.fill(crispRect)
+        context.restoreGState()
+    }
+
+    override func paste(_ sender: Any?) {
+        guard let string = NSPasteboard.general.string(forType: .string) else {
+            super.paste(sender)
+            return
+        }
+        let flattened = string
+            .split(whereSeparator: \.isNewline)
+            .joined(separator: " ")
+        insertText(flattened, replacementRange: selectedRange())
+        revealSelection()
+    }
+
+    private func revealSelection() {
+        scrollRangeToVisible(selectedRange())
+    }
+
+    private var isCurrentFirstResponder: Bool {
+        window?.firstResponder === self
+    }
+
+    private func collapseSelectionAfterBlur() {
+        let range = selectedRange()
+        guard range.length > 0 else { return }
+        let caretLocation = min(range.location + range.length, string.utf16.count)
+        setSelectedRange(NSRange(location: caretLocation, length: 0))
+    }
+
+    private func invalidateInputVisualState() {
+        needsDisplay = true
+        superview?.needsDisplay = true
+        enclosingScrollView?.needsDisplay = true
+    }
+
+    private func handleCommandShortcut(_ event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command),
+              !flags.contains(.control),
+              !flags.contains(.option),
+              let key = event.charactersIgnoringModifiers?.lowercased()
+        else { return false }
+
+        switch key {
+        case "a":
+            selectAll(nil)
+            return true
+        case "c":
+            copy(nil)
+            return true
+        case "v":
+            paste(nil)
+            return true
+        case "x":
+            cut(nil)
+            return true
+        default:
+            return false
+        }
     }
 }
 
@@ -838,7 +1733,7 @@ private struct IconChromeButton: View {
     /// felt without anything moving.
     private var foreground: Color {
         if let tint {
-            return hovering ? tint : tint.opacity(0.85)
+            return hovering ? tint : tint.opacity(0.95)
         }
         return hovering ? .white : .white.opacity(0.75)
     }
@@ -947,7 +1842,14 @@ private struct TrackCoverSceneView: View {
     private func markCoverReady(for url: URL) {
         guard firstFrameReadyURL != url else { return }
         firstFrameReadyURL = url
-        onCoverReady?()
+        notifyCoverReady()
+    }
+
+    @MainActor
+    private func notifyCoverReady() {
+        Task { @MainActor in
+            onCoverReady?()
+        }
     }
 
     @MainActor
@@ -956,7 +1858,7 @@ private struct TrackCoverSceneView: View {
         guard let artworkURL = track?.image else {
             localURL = nil
             loadError = nil
-            onCoverReady?()
+            notifyCoverReady()
             return
         }
 
@@ -975,7 +1877,7 @@ private struct TrackCoverSceneView: View {
             guard !Task.isCancelled else { return }
             localURL = nil
             loadError = "Cover unavailable"
-            onCoverReady?()
+            notifyCoverReady()
         }
     }
 }
@@ -1000,6 +1902,8 @@ private struct TrackBadge: View {
         let innerInsets = badgeInnerInsets(compact: compact, placement: placement)
         let waveformSlotH = 14 * scale
         let marqueeDebugStretch = model.debugModeEnabled
+        let effectiveIsBuffering = model.isCurrentStationYouTube ? model.isYouTubeBuffering : model.isBuffering
+        let hasPlayableReadout = model.currentTrack != nil || model.isCurrentStationYouTube
 
         VStack(spacing: 1) {
             if model.readoutFontSettings.waveform {
@@ -1018,8 +1922,8 @@ private struct TrackBadge: View {
                     PixelWaveform(
                         mode: {
                             if model.isPlaying,
-                               !model.isBuffering,
-                               model.currentTrack != nil {
+                               !effectiveIsBuffering,
+                               hasPlayableReadout {
                                 return .playing
                             }
                             if model.isPlaying {
@@ -1060,9 +1964,9 @@ private struct TrackBadge: View {
             .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: placement.frameAlignment)
 
-            if let track = model.currentTrack {
+            if let track = model.currentTrack, track.hasRealMetadata {
                 trackText(track: track, placement: placement, marqueeDebugStretch: marqueeDebugStretch)
-            } else {
+            } else if model.currentTrack == nil {
                 GlowingPixelText(
                     text: model.streamStatus,
                     size: 14 * scale,
@@ -1783,7 +2687,7 @@ private struct BottomDock: View {
 
             RetroPlayPauseButton(
                 isPlaying: model.isPlaying,
-                isBuffering: model.isBuffering,
+                isBuffering: model.isCurrentStationYouTube ? model.isYouTubeBuffering : model.isBuffering,
                 accent: model.accent,
                 action: model.togglePlayback
             )
@@ -2027,9 +2931,14 @@ private struct SettingsOverlay: View {
 
     @State private var page: SettingsOverlayPage = .readout
     @State private var bongoModelListOpen = false
+    @State private var sceneListOpen = false
+    @State private var mediaListOpen = false
 
     private var textSize: CGFloat { compact ? 10 : 11 }
     private var titleSize: CGFloat { compact ? 12 : 13 }
+    private var youtubeCRTOnlySupportsVignette: Bool {
+        model.currentYouTubeVideoID != nil && model.visualMode == .live
+    }
 
     private var bongoCatPackChoices: [BongoCatPack] {
         BongoCatModelKind.allCases.map { .bundled($0) }
@@ -2081,6 +2990,8 @@ private struct SettingsOverlay: View {
         switch page {
         case .readout:
             readoutSection
+        case .media:
+            mediaSection
         case .bongo:
             bongoSection
         case .crt:
@@ -2093,7 +3004,7 @@ private struct SettingsOverlay: View {
             PixelIcon(.sliders, size: 13)
                 .foregroundStyle(model.accent)
 
-            Text("LOFI SETUP")
+            Text("SETUP")
                 .font(.pixel(size: titleSize))
                 .kerning(1.2)
                 .foregroundStyle(.white)
@@ -2309,6 +3220,86 @@ private struct SettingsOverlay: View {
         }
     }
 
+    private var mediaSection: some View {
+        SettingsSection {
+            SettingsChoiceRow(
+                title: "Mode",
+                choices: VisualMode.allCases,
+                selection: binding(
+                    get: { model.visualMode },
+                    set: { model.visualMode = $0 }
+                ),
+                label: { $0.label },
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsModelPickerRow(
+                title: "Scene",
+                choices: model.sceneChoices.map(\.id),
+                selection: binding(
+                    get: { model.currentScene.id },
+                    set: { id in
+                        if let scene = model.sceneChoices.first(where: { $0.id == id }) {
+                            model.selectScene(scene)
+                        }
+                    }
+                ),
+                expanded: $sceneListOpen,
+                label: { id in
+                    model.sceneChoices.first(where: { $0.id == id })?.displayName ?? id
+                },
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsChoiceRow(
+                title: "Library",
+                choices: VisualMediaLibraryScope.allCases,
+                selection: binding(
+                    get: { model.visualMediaLibraryScope },
+                    set: { model.visualMediaLibraryScope = $0 }
+                ),
+                label: { $0.label },
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            if let selectedMedia = model.currentVisualMedia {
+                SettingsModelPickerRow(
+                    title: "Media",
+                    choices: model.effectiveVisualMediaChoices,
+                    selection: binding(
+                        get: { model.currentVisualMedia ?? selectedMedia },
+                        set: { model.selectVisualMedia($0) }
+                    ),
+                    expanded: $mediaListOpen,
+                    label: { $0.displayName },
+                    accent: model.accent,
+                    textSize: textSize
+                )
+            } else {
+                SettingsActionRow(
+                    title: "Media",
+                    actionTitle: "No Media",
+                    accent: model.accent,
+                    textSize: textSize,
+                    action: {}
+                )
+            }
+
+            SettingsDualActionRow(
+                title: "Custom Media",
+                primaryTitle: "Open Folder",
+                secondaryTitle: "Refresh",
+                accent: model.accent,
+                textSize: textSize,
+                primaryAction: model.openUserVisualMediaFolder,
+                secondaryAction: model.reloadUserVisualMediaFromDisk
+            )
+        }
+    }
+
     private var crtSection: some View {
         VStack(alignment: .leading, spacing: 14) {
             SettingsSection {
@@ -2323,7 +3314,8 @@ private struct SettingsOverlay: View {
                     title: "Curvation",
                     isOn: crtBool(\.curvation),
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -2332,7 +3324,8 @@ private struct SettingsOverlay: View {
                     selection: crtChoice(\.curvationStrength),
                     label: { $0.label },
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
@@ -2355,7 +3348,8 @@ private struct SettingsOverlay: View {
                     title: "Chromatic Aberration",
                     isOn: crtBool(\.chromaticAberration),
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -2364,14 +3358,16 @@ private struct SettingsOverlay: View {
                     selection: crtChoice(\.chromaticAberrationStrength),
                     label: { $0.label },
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
                     title: "Scan Line",
                     isOn: crtBool(\.scanlines),
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -2380,7 +3376,8 @@ private struct SettingsOverlay: View {
                     selection: crtChoice(\.scanlineOpacity),
                     label: { $0.label },
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -2389,14 +3386,16 @@ private struct SettingsOverlay: View {
                     selection: crtChoice(\.scanlineDensity),
                     label: { $0.label },
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
                     title: "Motion Blur",
                     isOn: crtBool(\.motionBlur),
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -2405,7 +3404,8 @@ private struct SettingsOverlay: View {
                     selection: crtChoice(\.motionBlurStrength),
                     label: { $0.label },
                     accent: model.accent,
-                    textSize: textSize
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
                 )
             }
 
@@ -2415,30 +3415,33 @@ private struct SettingsOverlay: View {
 
     private var shatteredGlassSection: some View {
         SettingsSection {
-            SettingsToggleRow(
-                title: "Enabled",
-                isOn: shatteredGlassBool(\.enabled),
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsToggleRow(
+                    title: "Enabled",
+                    isOn: shatteredGlassBool(\.enabled),
+                    accent: model.accent,
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
+                )
 
-            SettingsChoiceRow(
-                title: "Strength",
-                choices: ShatteredGlassStrength.allCases,
-                selection: shatteredGlassChoice(\.strength),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Strength",
+                    choices: ShatteredGlassStrength.allCases,
+                    selection: shatteredGlassChoice(\.strength),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
+                )
 
-            SettingsChoiceRow(
-                title: "Position",
-                choices: ShatteredGlassPlacement.allCases,
-                selection: shatteredGlassChoice(\.placement),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
+                SettingsChoiceRow(
+                    title: "Position",
+                    choices: ShatteredGlassPlacement.allCases,
+                    selection: shatteredGlassChoice(\.placement),
+                    label: { $0.label },
+                    accent: model.accent,
+                    textSize: textSize,
+                    isEnabled: !youtubeCRTOnlySupportsVignette
+                )
         }
     }
 
@@ -2520,6 +3523,7 @@ private struct SettingsOverlay: View {
 
 private enum SettingsOverlayPage: String, CaseIterable, Identifiable {
     case readout
+    case media
     case bongo
     case crt
 
@@ -2528,6 +3532,7 @@ private enum SettingsOverlayPage: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .readout: return "READOUT"
+        case .media: return "VISUAL"
         case .bongo: return "BONGO"
         case .crt: return "CRT"
         }
@@ -2583,6 +3588,7 @@ private struct SettingsToggleRow: View {
     @Binding var isOn: Bool
     let accent: Color
     let textSize: CGFloat
+    var isEnabled: Bool = true
     @State private var hovering = false
 
     var body: some View {
@@ -2592,7 +3598,7 @@ private struct SettingsToggleRow: View {
             HStack(spacing: 10) {
                 Text(title.uppercased())
                     .font(.pixel(size: textSize))
-                    .foregroundStyle(hovering ? .white : .white.opacity(0.88))
+                    .foregroundStyle(isEnabled ? (hovering ? .white : .white.opacity(0.88)) : .white.opacity(0.34))
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
 
@@ -2601,16 +3607,21 @@ private struct SettingsToggleRow: View {
                 Text(isOn ? "ON" : "OFF")
                     .font(.pixel(size: textSize))
                     .monospacedDigit()
-                    .foregroundStyle(isOn ? .black : .white.opacity(0.76))
+                    .foregroundStyle(isEnabled ? (isOn ? .black : .white.opacity(0.76)) : .white.opacity(0.30))
                     .frame(width: 42, height: 21)
-                    .background(isOn ? accent : Color.white.opacity(hovering ? 0.105 : 0.055))
+                    .background(
+                        isEnabled
+                            ? (isOn ? accent : Color.white.opacity(hovering ? 0.105 : 0.055))
+                            : Color.white.opacity(0.035)
+                    )
             }
             .frame(minHeight: 24)
-            .background(hovering ? Color.white.opacity(0.045) : Color.clear)
+            .background(isEnabled && hovering ? Color.white.opacity(0.045) : Color.clear)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .onHover { hovering = $0 }
+        .disabled(!isEnabled)
+        .onHover { hovering = isEnabled && $0 }
     }
 }
 
@@ -2621,13 +3632,14 @@ private struct SettingsChoiceRow<Choice: Equatable>: View {
     let label: (Choice) -> String
     let accent: Color
     let textSize: CGFloat
+    var isEnabled: Bool = true
     @State private var hoveredIndex: Int?
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Text(title.uppercased())
                 .font(.pixel(size: textSize))
-                .foregroundStyle(.white.opacity(0.74))
+                .foregroundStyle(.white.opacity(isEnabled ? 0.74 : 0.34))
                 .lineLimit(1)
                 .minimumScaleFactor(0.75)
                 .frame(width: 118, alignment: .leading)
@@ -2650,16 +3662,25 @@ private struct SettingsChoiceRow<Choice: Equatable>: View {
         } label: {
             Text(label(choice).uppercased())
                 .font(.pixel(size: max(9, textSize - 1)))
-                .foregroundStyle(selected ? .black : (hovering ? .white : .white.opacity(0.82)))
+                .foregroundStyle(
+                    isEnabled
+                        ? (selected ? .black : (hovering ? .white : .white.opacity(0.82)))
+                        : .white.opacity(0.30)
+                )
                 .lineLimit(1)
                 .minimumScaleFactor(0.60)
                 .frame(maxWidth: .infinity, minHeight: 22)
                 .padding(.horizontal, 3)
-                .background(selected ? accent : Color.white.opacity(hovering ? 0.115 : 0.055))
+                .background(
+                    isEnabled
+                        ? (selected ? accent : Color.white.opacity(hovering ? 0.115 : 0.055))
+                        : Color.white.opacity(0.035)
+                )
         }
         .buttonStyle(.plain)
+        .disabled(!isEnabled)
         .onHover { isHovering in
-            hoveredIndex = isHovering ? index : (hoveredIndex == index ? nil : hoveredIndex)
+            hoveredIndex = isEnabled && isHovering ? index : (hoveredIndex == index ? nil : hoveredIndex)
         }
     }
 }
@@ -3264,6 +4285,77 @@ enum SettingsContextMenu {
         readoutItem.submenu = readoutMenu
         menu.addItem(readoutItem)
 
+        let sceneRoot = NSMenuItem(title: "Scene", action: nil, keyEquivalent: "")
+        let sceneMenu = NSMenu()
+        for scene in model.sceneChoices {
+            let item = NSMenuItem(
+                title: scene.displayName,
+                action: #selector(MenuTarget.selectScene(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = scene.id
+            item.state = (model.currentScene.id == scene.id) ? .on : .off
+            item.target = MenuTarget.shared
+            sceneMenu.addItem(item)
+        }
+        sceneRoot.submenu = sceneMenu
+        menu.addItem(sceneRoot)
+
+        let mediaRoot = NSMenuItem(title: "Media", action: nil, keyEquivalent: "")
+        let mediaMenu = NSMenu()
+        let libraryItem = NSMenuItem(title: "Library", action: nil, keyEquivalent: "")
+        let libraryMenu = NSMenu()
+        for scope in VisualMediaLibraryScope.allCases {
+            let item = NSMenuItem(
+                title: scope.label,
+                action: #selector(MenuTarget.selectVisualMediaLibraryScope(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = scope.rawValue
+            item.state = (model.visualMediaLibraryScope == scope) ? .on : .off
+            item.target = MenuTarget.shared
+            libraryMenu.addItem(item)
+        }
+        libraryItem.submenu = libraryMenu
+        mediaMenu.addItem(libraryItem)
+
+        let choices = model.effectiveVisualMediaChoices
+        if !choices.isEmpty {
+            let selectedItem = NSMenuItem(title: "Selected", action: nil, keyEquivalent: "")
+            let selectedMenu = NSMenu()
+            for media in choices.prefix(40) {
+                let item = NSMenuItem(
+                    title: media.displayName,
+                    action: #selector(MenuTarget.selectVisualMedia(_:)),
+                    keyEquivalent: ""
+                )
+                item.representedObject = media.id
+                item.state = (model.currentVisualMedia?.id == media.id) ? .on : .off
+                item.target = MenuTarget.shared
+                selectedMenu.addItem(item)
+            }
+            selectedItem.submenu = selectedMenu
+            mediaMenu.addItem(selectedItem)
+        }
+
+        mediaMenu.addItem(.separator())
+        let openMediaFolderItem = NSMenuItem(
+            title: "Open Custom Media Folder",
+            action: #selector(MenuTarget.openUserVisualMediaFolder(_:)),
+            keyEquivalent: ""
+        )
+        openMediaFolderItem.target = MenuTarget.shared
+        mediaMenu.addItem(openMediaFolderItem)
+        let reloadMediaItem = NSMenuItem(
+            title: "Reload Custom Media",
+            action: #selector(MenuTarget.reloadUserVisualMediaFromDisk(_:)),
+            keyEquivalent: ""
+        )
+        reloadMediaItem.target = MenuTarget.shared
+        mediaMenu.addItem(reloadMediaItem)
+        mediaRoot.submenu = mediaMenu
+        menu.addItem(mediaRoot)
+
         let bongoRoot = NSMenuItem(title: "Bongo Cat", action: nil, keyEquivalent: "")
         let bongoMenu = NSMenu()
 
@@ -3437,6 +4529,7 @@ enum SettingsContextMenu {
         menu.addItem(bongoRoot)
 
         // --- CRT submenu ---
+        let crtMetalEffectsAvailable = !(model.currentYouTubeVideoID != nil && model.visualMode == .live)
         let crtItem = NSMenuItem(title: "CRT", action: nil, keyEquivalent: "")
         let crtMenu = NSMenu()
         let crtEnabledItem = NSMenuItem(
@@ -3477,6 +4570,7 @@ enum SettingsContextMenu {
         curvationStrengthItem.submenu = curvationStrengthMenu
         curvationMenu.addItem(curvationStrengthItem)
         curvationItem.submenu = curvationMenu
+        curvationItem.isEnabled = crtMetalEffectsAvailable
         crtMenu.addItem(curvationItem)
 
         let vignetteItem = NSMenuItem(title: "Vignette", action: nil, keyEquivalent: "")
@@ -3538,6 +4632,7 @@ enum SettingsContextMenu {
         chromaticStrengthItem.submenu = chromaticStrengthMenu
         chromaticMenu.addItem(chromaticStrengthItem)
         chromaticItem.submenu = chromaticMenu
+        chromaticItem.isEnabled = crtMetalEffectsAvailable
         crtMenu.addItem(chromaticItem)
 
         let scanlineItem = NSMenuItem(title: "Scan Line", action: nil, keyEquivalent: "")
@@ -3586,6 +4681,7 @@ enum SettingsContextMenu {
         scanlineMenu.addItem(densityItem)
 
         scanlineItem.submenu = scanlineMenu
+        scanlineItem.isEnabled = crtMetalEffectsAvailable
         crtMenu.addItem(scanlineItem)
 
         let motionBlurItem = NSMenuItem(title: "Motion Blur", action: nil, keyEquivalent: "")
@@ -3617,6 +4713,7 @@ enum SettingsContextMenu {
         motionBlurStrengthItem.submenu = motionBlurStrengthMenu
         motionBlurMenu.addItem(motionBlurStrengthItem)
         motionBlurItem.submenu = motionBlurMenu
+        motionBlurItem.isEnabled = crtMetalEffectsAvailable
         crtMenu.addItem(motionBlurItem)
 
         crtMenu.addItem(.separator())
@@ -3666,6 +4763,7 @@ enum SettingsContextMenu {
         glassMenu.addItem(glassPlacementItem)
 
         glassItem.submenu = glassMenu
+        glassItem.isEnabled = crtMetalEffectsAvailable
         crtMenu.addItem(glassItem)
 
         crtItem.submenu = crtMenu
@@ -3775,6 +4873,40 @@ final class MenuTarget: NSObject {
         var s = model.readoutFontSettings
         s.textGlow.toggle()
         model.readoutFontSettings = s
+    }
+
+    @objc func selectVisualMediaLibraryScope(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let scope = VisualMediaLibraryScope(rawValue: raw),
+              let model
+        else { return }
+        model.visualMediaLibraryScope = scope
+    }
+
+    @objc func selectVisualMedia(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let model,
+              let media = model.effectiveVisualMediaChoices.first(where: { $0.id == id })
+        else { return }
+        model.selectVisualMedia(media)
+    }
+
+    @objc func selectScene(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String,
+              let model,
+              let scene = model.sceneChoices.first(where: { $0.id == id })
+        else { return }
+        model.selectScene(scene)
+    }
+
+    @objc func reloadUserVisualMediaFromDisk(_ sender: NSMenuItem) {
+        guard let model else { return }
+        model.reloadUserVisualMediaFromDisk()
+    }
+
+    @objc func openUserVisualMediaFolder(_ sender: NSMenuItem) {
+        guard let model else { return }
+        model.openUserVisualMediaFolder()
     }
 
     @objc func toggleBongoOverlay(_ sender: NSMenuItem) {

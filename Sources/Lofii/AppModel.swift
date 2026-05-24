@@ -4,25 +4,25 @@ import OSLog
 import SwiftUI
 
 enum VisualMode: String, CaseIterable, Identifiable, Sendable {
-    case cinematic
-    case gif
-    case cover
+    case live
+    case scene
+    case media
 
     var id: String { rawValue }
 
     var label: String {
         switch self {
-        case .cinematic: return "Cinematic"
-        case .gif:       return "lofii GIF"
-        case .cover:     return "Track Cover"
+        case .live:  return "Live"
+        case .scene: return "Scene"
+        case .media: return "Media"
         }
     }
 
     var glyph: PixelGlyph {
         switch self {
-        case .cinematic: return .movie
-        case .gif:       return .gif
-        case .cover:     return .imageFrame
+        case .live:  return .airplaySharp
+        case .scene: return .buildingCommunitySharp
+        case .media: return .imageSharp
         }
     }
 }
@@ -127,7 +127,7 @@ enum ScanlineOpacity: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 
     func resolvedOpacity(for mode: VisualMode) -> Double {
-        let base = mode == .cinematic ? 0.18 : 0.30
+        let base = mode == .scene ? 0.18 : 0.30
         let multiplier: Double
         switch self {
         case .subtle:   multiplier = 0.65
@@ -808,39 +808,70 @@ final class AppModel: ObservableObject {
     private static let playbackStallTickThreshold = 3
 
     @Published private(set) var presets = LofiiPreset.presets
+    @Published private(set) var customStations: [CustomStation] = []
+    @Published private(set) var builtInStationOverrides: [BuiltInStationOverride] = []
     @Published private(set) var gifAssets = GifSceneCatalog.animated
-    @Published var selectedIndex = 0 {
+    @Published private(set) var userVisualMediaAssets: [VisualMediaAsset] = UserVisualMediaLibrary.listImportedMedia()
+    @Published private(set) var visualMediaReloadToken: UInt = 0
+    @Published var visualMediaLibraryScope: VisualMediaLibraryScope = AppModel.loadVisualMediaLibraryScope() {
         didSet {
-            guard selectedIndex != oldValue else { return }
-            UserDefaults.standard.set(currentPreset.id, forKey: Self.selectedPresetIDKey)
-            currentVariant = currentPreset.defaultVariant
-            cancelPlaybackRecovery()
-            resetChillhopPlaybackState()
-            currentTrack = nil
-            lastPlaybackWatchdogSample = nil
-            stalledPlaybackWatchdogTicks = 0
-            streamStatus = "Connecting…"
-            refreshSystemMediaControls()
-            Task {
-                await loadLiveTrack(replacingCurrentItem: true)
+            guard visualMediaLibraryScope != oldValue else { return }
+            UserDefaults.standard.set(visualMediaLibraryScope.rawValue, forKey: Self.visualMediaLibraryScopeKey)
+            ensureCurrentVisualMediaSelection()
+            if visualMode == .media {
+                resetVisualStageLoadingGate(updateBongoLayer: false)
             }
         }
     }
-    @Published var currentVariant: SceneVariant = LofiiPreset.presets[0].defaultVariant {
+    @Published var currentVisualMediaID: String? = AppModel.loadCurrentVisualMediaID() {
+        didSet {
+            guard currentVisualMediaID != oldValue else { return }
+            if let currentVisualMediaID {
+                UserDefaults.standard.set(currentVisualMediaID, forKey: Self.currentVisualMediaIDKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.currentVisualMediaIDKey)
+            }
+            if visualMode == .media {
+                resetVisualStageLoadingGate(updateBongoLayer: false)
+            }
+        }
+    }
+    @Published var currentSceneID: String? = AppModel.loadCurrentSceneID() {
+        didSet {
+            guard currentSceneID != oldValue else { return }
+            if let currentSceneID {
+                UserDefaults.standard.set(currentSceneID, forKey: Self.currentSceneIDKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.currentSceneIDKey)
+            }
+            refreshSystemMediaControls()
+            if visualMode == .scene {
+                resetVisualStageLoadingGate(updateBongoLayer: false)
+            }
+        }
+    }
+    @Published var selectedIndex = 0 {
+        didSet {
+            guard selectedIndex != oldValue else { return }
+            activateSelectedPreset()
+        }
+    }
+    @Published var currentVariant: SceneVariant = .nightRain {
         didSet {
             refreshSystemMediaControls()
+            if visualMode == .scene {
+                resetVisualStageLoadingGate(updateBongoLayer: false)
+            }
         }
     }
     @Published var visualMode: VisualMode = AppModel.loadVisualMode() {
         didSet {
             guard visualMode != oldValue else { return }
             UserDefaults.standard.set(visualMode.rawValue, forKey: Self.visualModeKey)
-            if visualMode == .gif || visualMode == .cover {
+            if visualMode == .media {
                 Task { await GifCache.shared.prefetchStatics() }
-                resetVisualStageLoadingGate(updateBongoLayer: false)
-            } else if visualMode == .cinematic {
-                resetVisualStageLoadingGate(updateBongoLayer: false)
             }
+            resetVisualStageLoadingGate(updateBongoLayer: false)
         }
     }
 
@@ -852,7 +883,9 @@ final class AppModel: ObservableObject {
             if bongoOverlayVisible {
                 BongoInputMonitor.requestAccessibilityTrustPromptIfNeeded()
                 markBongoLive2DPending()
-                resetVisualStageLoadingGate(updateBongoLayer: false)
+                if !liveModeUsesYouTubeVideoBackground {
+                    resetVisualStageLoadingGate(updateBongoLayer: false)
+                }
             } else {
                 markBongoLive2DReady()
             }
@@ -867,11 +900,11 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.set(debugModeEnabled, forKey: Self.debugModeEnabledKey)
         }
     }
-    @Published var currentGifIndex: Int = 0 {
+    @Published var currentVisualMediaIndex: Int = 0 {
         didSet {
-            guard currentGifIndex != oldValue else { return }
-            guard visualMode == .gif else { return }
-            // Swapping the GIF index only invalidates primary media — Live2D
+            guard currentVisualMediaIndex != oldValue else { return }
+            guard visualMode == .media else { return }
+            // Swapping the media index only invalidates primary media — Live2D
             // stays mounted, so we must not reset the Bongo layer gate.
             resetVisualStageLoadingGate(updateBongoLayer: false)
         }
@@ -880,19 +913,19 @@ final class AppModel: ObservableObject {
     // MARK: - Visual stage loading (global snow gate)
 
     /// True when every **tracked** contributor for the current layout is ready
-    /// so the global loading snow can hide. Tracking is active in GIF mode or
-    /// whenever Bongo is on (then primary media is the Bongo background and
-    /// Bongo adds a Live2D dependency). Cinematic without Bongo does not use
-    /// this gate (scene video handles its own transition).
+    /// so the global loading snow can hide. Tracking is active in Live/Media mode
+    /// or whenever Bongo is on (then primary media is the Bongo background and
+    /// Bongo adds a Live2D dependency). Scene without Bongo handles its own
+    /// transition.
     @Published private(set) var visualStageReady: Bool = true
 
-    /// GIF / scene media used by `GifSceneView` or the Bongo unified stage.
+    /// Primary media used by `VisualMediaSceneView` or the Bongo unified stage.
     private var primaryVisualMediaReady: Bool = false
     /// Live2D runtime for Bongo; ignored when `bongoOverlayVisible` is false.
     private var bongoLive2DReady: Bool = true
 
     private func refreshVisualStageReady() {
-        let tracksLoading = bongoOverlayVisible || visualMode == .gif || visualMode == .cover
+        let tracksLoading = bongoOverlayVisible || visualMode == .media || visualMode == .live
         let nextReady: Bool
         if !tracksLoading {
             nextReady = true
@@ -956,8 +989,10 @@ final class AppModel: ObservableObject {
     @Published var currentTrack: LiveTrack? {
         didSet {
             refreshSystemMediaControls()
-            if visualMode == .cover, currentTrack?.image != oldValue?.image {
-                resetVisualStageLoadingGate(updateBongoLayer: false)
+            if visualMode == .live, currentTrack?.image != oldValue?.image {
+                if liveModeUsesTrackArtworkBackground {
+                    resetVisualStageLoadingGate(updateBongoLayer: false)
+                }
             }
         }
     }
@@ -966,6 +1001,7 @@ final class AppModel: ObservableObject {
     /// pipeline is still spinning up (initial connect or mid-stream rebuffer).
     /// Drives the spinner overlay on the play/pause button.
     @Published private(set) var isBuffering = false
+    @Published private(set) var isYouTubeBuffering = false
     /// UI-level visibility gate for high-frequency visual rendering work.
     /// When false (widget hidden via menubar), scene/gif playback and
     /// animated overlays pause to reduce CPU/GPU usage.
@@ -1105,6 +1141,7 @@ final class AppModel: ObservableObject {
     private static let shatteredGlassSettingsKey = "lofii.shatteredGlassSettings"
     private static let readoutFontSettingsKey = "lofii.readoutFontSettings"
     private static let visualModeKey = "lofii.visualMode"
+    private static let currentSceneIDKey = "lofii.currentSceneID"
     private static let bongoOverlayVisibleKey = "lofii.bongoOverlayVisible"
     private static let debugModeEnabledKey = "lofii.debugModeEnabled"
     private static let bongoDesktopMaskTintKey = "lofii.bongoDesktopMaskTint"
@@ -1116,6 +1153,8 @@ final class AppModel: ObservableObject {
     private static let bongoStageScaleTierKey = "lofii.bongoStageScaleTier"
     private static let bongoInputTickRateKey = "lofii.bongoInputTickRate"
     private static let bongoMouseCursorSpaceKey = "lofii.bongoMouseCursorSpace"
+    private static let visualMediaLibraryScopeKey = "lofii.visualMediaLibraryScope"
+    private static let currentVisualMediaIDKey = "lofii.currentVisualMediaID"
     private static let selectedPresetIDKey = "lofii.selectedPresetID"
     private static let alwaysOnTopKey = "lofii.alwaysOnTop"
 
@@ -1170,9 +1209,9 @@ final class AppModel: ObservableObject {
 
     private static func loadVisualMode() -> VisualMode {
         guard let raw = UserDefaults.standard.string(forKey: visualModeKey) else {
-            return .cinematic
+            return .scene
         }
-        return VisualMode(rawValue: raw) ?? .cinematic
+        return VisualMode(rawValue: raw) ?? .scene
     }
 
     private static func loadBongoOverlayVisible() -> Bool {
@@ -1261,11 +1300,74 @@ final class AppModel: ObservableObject {
         return value
     }
 
+    private static func loadVisualMediaLibraryScope() -> VisualMediaLibraryScope {
+        guard let raw = UserDefaults.standard.string(forKey: visualMediaLibraryScopeKey),
+              let value = VisualMediaLibraryScope(rawValue: raw)
+        else { return .builtIn }
+        return value
+    }
+
+    private static func loadCurrentVisualMediaID() -> String? {
+        UserDefaults.standard.string(forKey: currentVisualMediaIDKey)
+    }
+
+    private static func loadCurrentSceneID() -> String? {
+        UserDefaults.standard.string(forKey: currentSceneIDKey)
+    }
+
     private static func loadSelectedPresetIndex(from presets: [LofiiPreset]) -> Int {
         guard let presetID = UserDefaults.standard.string(forKey: selectedPresetIDKey),
               let index = presets.firstIndex(where: { $0.id == presetID })
         else { return 0 }
         return index
+    }
+
+    private static func combinedPresets(
+        customStations: [CustomStation],
+        builtInOverrides: [BuiltInStationOverride]
+    ) -> [LofiiPreset] {
+        let defaultScene = SceneCatalog.presets.first { $0.id == "chill-vibes" }
+            ?? SceneCatalog.presets[0]
+        let overridesByPresetID = Dictionary(uniqueKeysWithValues: builtInOverrides.map { ($0.presetID, $0) })
+        let builtIns = LofiiPreset.presets.map { preset in
+            overridesByPresetID[preset.id]?.apply(to: preset) ?? preset
+        }
+        return builtIns + customStations.map { station in
+            station.lofiiPreset(defaultScene: defaultScene)
+        }
+    }
+
+    private static func sourceIdentity(for source: RadioSource) -> String {
+        switch source {
+        case let .chillhop(stationID):
+            return "chillhop:\(stationID)"
+        case let .directStream(_, url):
+            return "direct-audio:\(url.absoluteString)"
+        case let .directVideo(_, url):
+            return "direct-video:\(url.absoluteString)"
+        case let .radioCo(_, stationID):
+            return "radioco:\(stationID)"
+        case let .youtube(videoID):
+            return "youtube:\(videoID)"
+        }
+    }
+
+    private func activateSelectedPreset() {
+        UserDefaults.standard.set(currentPreset.id, forKey: Self.selectedPresetIDKey)
+        isYouTubeBuffering = false
+        cancelPlaybackRecovery()
+        resetChillhopPlaybackState()
+        currentTrack = nil
+        lastPlaybackWatchdogSample = nil
+        stalledPlaybackWatchdogTicks = 0
+        streamStatus = "Connecting…"
+        refreshSystemMediaControls()
+        if visualMode == .live {
+            resetVisualStageLoadingGate(updateBongoLayer: false)
+        }
+        Task {
+            await loadLiveTrack(replacingCurrentItem: true)
+        }
     }
 
     private static func loadAlwaysOnTop() -> Bool {
@@ -1279,6 +1381,7 @@ final class AppModel: ObservableObject {
     private let systemMediaControls = SystemMediaControls()
     private let chillhopService = ChillhopService()
     private let radioCoService = RadioCoService()
+    private let customStationStore = CustomStationStore()
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "lofii",
         category: "audio.flow"
@@ -1309,8 +1412,14 @@ final class AppModel: ObservableObject {
     }
 
     init() {
+        let stationDocument = customStationStore.loadDocument()
+        customStations = stationDocument.stations
+        builtInStationOverrides = stationDocument.builtInOverrides
+        presets = Self.combinedPresets(
+            customStations: customStations,
+            builtInOverrides: builtInStationOverrides
+        )
         selectedIndex = Self.loadSelectedPresetIndex(from: presets)
-        currentVariant = presets[selectedIndex].defaultVariant
         audioEngine.setVolume(volume)
         systemMediaControls.install(
             play: { [weak self] in
@@ -1338,6 +1447,11 @@ final class AppModel: ObservableObject {
         // as "loading" before they ever press play.
         audioEngine.onPlaybackStateChange = { [weak self] state in
             guard let self else { return }
+            if self.currentPreset.radio.source.isYouTube {
+                self.isBuffering = false
+                self.cancelPlaybackRecovery()
+                return
+            }
             DiagnosticLog.appendPlayback(
                 "model.playbackState state=\(String(describing: state)) isPlaying=\(self.isPlaying) isBuffering=\(self.isBuffering) preset=\(self.currentPreset.id) track=\"\(self.currentTrack?.title ?? "nil")\""
             )
@@ -1356,6 +1470,11 @@ final class AppModel: ObservableObject {
         }
         audioEngine.onPlaybackStallDetected = { [weak self] reason in
             guard let self else { return }
+            if self.currentPreset.radio.source.isYouTube {
+                self.isBuffering = false
+                self.cancelPlaybackRecovery()
+                return
+            }
             self.logger.info("Playback stall signal reason=\(reason, privacy: .public)")
             DiagnosticLog.appendPlayback(
                 "model.stallSignal reason=\"\(reason)\" \(self.playbackDiagnosticContext(sample: self.audioEngine.playbackSample()))"
@@ -1369,7 +1488,9 @@ final class AppModel: ObservableObject {
         )
         syncPlayback()
 
-        currentGifIndex = Int.random(in: 0..<max(gifAssets.count, 1))
+        currentVisualMediaIndex = Int.random(in: 0..<max(gifAssets.count, 1))
+        refreshUserVisualMediaFromDisk()
+        ensureCurrentVisualMediaSelection()
 
         Task {
             await loadLiveTrack(replacingCurrentItem: true)
@@ -1415,26 +1536,176 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var currentGif: GifAsset? {
-        guard !gifAssets.isEmpty else { return nil }
-        let idx = ((currentGifIndex % gifAssets.count) + gifAssets.count) % gifAssets.count
-        return gifAssets[idx]
+    var visualMediaAssets: [VisualMediaAsset] {
+        switch visualMediaLibraryScope {
+        case .builtIn:
+            return builtInVisualMediaAssets
+        case .custom:
+            return userVisualMediaAssets
+        case .all:
+            return builtInVisualMediaAssets + userVisualMediaAssets
+        }
+    }
+
+    private var builtInVisualMediaAssets: [VisualMediaAsset] {
+        gifAssets.map(VisualMediaAsset.builtInGif)
+    }
+
+    private var effectiveVisualMediaAssets: [VisualMediaAsset] {
+        let assets = visualMediaAssets
+        return assets.isEmpty ? builtInVisualMediaAssets : assets
+    }
+
+    var effectiveVisualMediaChoices: [VisualMediaAsset] {
+        effectiveVisualMediaAssets
+    }
+
+    var currentVisualMedia: VisualMediaAsset? {
+        let assets = effectiveVisualMediaAssets
+        guard !assets.isEmpty else { return nil }
+        if let currentVisualMediaID,
+           let selected = assets.first(where: { $0.id == currentVisualMediaID }) {
+            return selected
+        }
+        let idx = ((currentVisualMediaIndex % assets.count) + assets.count) % assets.count
+        return assets[idx]
+    }
+
+    var currentVisualMediaLabel: String {
+        currentVisualMedia?.displayName ?? "Built-in Media"
+    }
+
+    var hasCustomVisualMedia: Bool {
+        !userVisualMediaAssets.isEmpty
+    }
+
+    func refreshUserVisualMediaFromDisk() {
+        userVisualMediaAssets = UserVisualMediaLibrary.listImportedMedia()
+        logVisualMedia(
+            "scan scope=\(visualMediaLibraryScope.rawValue) customCount=\(userVisualMediaAssets.count) first=\"\(userVisualMediaAssets.first?.displayName ?? "nil")\" root=\"\(UserVisualMediaLibrary.userImportsRootURL().path)\""
+        )
+    }
+
+    func reloadUserVisualMediaFromDisk() {
+        refreshUserVisualMediaFromDisk()
+        ensureCurrentVisualMediaSelection()
+        visualMediaReloadToken &+= 1
+        logVisualMedia(
+            "reload token=\(visualMediaReloadToken) scope=\(visualMediaLibraryScope.rawValue) selected=\"\(currentVisualMediaID ?? "nil")\" effectiveCount=\(effectiveVisualMediaAssets.count)"
+        )
+        if visualMode == .media {
+            resetVisualStageLoadingGate(updateBongoLayer: false)
+        }
+    }
+
+    func openUserVisualMediaFolder() {
+        let url = UserVisualMediaLibrary.userImportsRootURL()
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            NSWorkspace.shared.open(url)
+        } catch {
+            logger.error("Failed to open user media folder: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func selectVisualMedia(_ asset: VisualMediaAsset) {
+        setCurrentVisualMediaID(asset.id, reason: "explicit-select")
+        if let index = effectiveVisualMediaAssets.firstIndex(of: asset) {
+            currentVisualMediaIndex = index
+        }
+        if visualMode != .media {
+            visualMode = .media
+        }
+    }
+
+    private func ensureCurrentVisualMediaSelection() {
+        let assets = effectiveVisualMediaAssets
+        guard !assets.isEmpty else {
+            setCurrentVisualMediaID(nil, reason: "no-effective-assets")
+            return
+        }
+        if let currentVisualMediaID,
+           assets.contains(where: { $0.id == currentVisualMediaID }) {
+            logVisualMedia(
+                "selection-kept reason=existing scope=\(visualMediaLibraryScope.rawValue) selected=\"\(currentVisualMediaID)\" effectiveCount=\(assets.count)"
+            )
+            return
+        }
+        let idx = ((currentVisualMediaIndex % assets.count) + assets.count) % assets.count
+        setCurrentVisualMediaID(assets[idx].id, reason: "repair-missing-selection")
+    }
+
+    private func setCurrentVisualMediaID(_ id: String?, reason: String) {
+        currentVisualMediaID = id
+        if let id {
+            UserDefaults.standard.set(id, forKey: Self.currentVisualMediaIDKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.currentVisualMediaIDKey)
+        }
+        logVisualMedia(
+            "selection-set reason=\(reason) scope=\(visualMediaLibraryScope.rawValue) selected=\"\(id ?? "nil")\" customCount=\(userVisualMediaAssets.count) effectiveCount=\(effectiveVisualMediaAssets.count)"
+        )
+    }
+
+    private func logVisualMedia(_ message: String) {
+        logger.info("visualMedia.\(message, privacy: .public)")
+        DiagnosticLog.appendPlayback("visualMedia.\(message)")
+    }
+
+    var sceneChoices: [SceneAsset] {
+        SceneCatalog.presets
     }
 
     var currentPreset: LofiiPreset {
         presets[selectedIndex]
     }
 
+    var currentYouTubeVideoID: String? {
+        currentPreset.radio.source.youtubeVideoID
+    }
+
+    var currentDirectVideoURL: URL? {
+        currentPreset.radio.source.directVideoURL
+    }
+
+    var isCurrentStationYouTube: Bool {
+        currentPreset.radio.source.isYouTube
+    }
+
+    var isCurrentStationDirectVideo: Bool {
+        currentPreset.radio.source.directVideoURL != nil
+    }
+
+    private var liveModeUsesTrackArtworkBackground: Bool {
+        visualMode == .live &&
+            currentYouTubeVideoID == nil &&
+            currentDirectVideoURL == nil
+    }
+
+    private var liveModeUsesYouTubeVideoBackground: Bool {
+        visualMode == .live &&
+            currentYouTubeVideoID != nil
+    }
+
+    var isSceneVariantControlAvailable: Bool {
+        visualMode == .scene
+    }
+
     var currentScene: SceneAsset {
-        currentPreset.scene
+        if let currentSceneID,
+           let scene = SceneCatalog.presets.first(where: { $0.id == currentSceneID }) {
+            return scene
+        }
+        return SceneCatalog.presets.first ?? currentPreset.scene
     }
 
     var accent: Color {
-        currentScene.palette.accent
+        currentPreset.pickerAccent
     }
 
     private func refreshSystemMediaControls() {
         systemMediaControls.update(
+            stationName: currentPreset.displayName,
             station: currentPreset.radio,
             scene: currentScene,
             variant: currentVariant,
@@ -1447,9 +1718,244 @@ final class AppModel: ObservableObject {
         isPlaying.toggle()
     }
 
+    func handleYouTubePlayerError(_ code: Int) {
+        guard currentPreset.radio.source.isYouTube else { return }
+        streamStatus = "YouTube video unavailable"
+        isBuffering = false
+        isYouTubeBuffering = false
+        DiagnosticLog.appendPlayback(
+            "model.youtubeError preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) code=\(code)"
+        )
+    }
+
+    func handleYouTubePlaybackState(_ state: YouTubePlaybackState) {
+        guard currentPreset.radio.source.isYouTube else { return }
+        switch state {
+        case .playing:
+            isYouTubeBuffering = false
+            isBuffering = false
+            streamStatus = "Playing on YouTube"
+            let sourceStableID = currentPreset.radio.source.stableID
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 550_000_000)
+                guard visualMode == .live,
+                      currentPreset.radio.source.stableID == sourceStableID
+                else { return }
+                markPrimaryVisualMediaReady()
+            }
+        case .buffering:
+            isYouTubeBuffering = isPlaying
+            streamStatus = isPlaying ? "YouTube buffering…" : "Paused"
+        case .paused, .ended, .cued, .unstarted, .unknown:
+            isYouTubeBuffering = false
+            if !isPlaying {
+                streamStatus = "Paused"
+            }
+        }
+    }
+
     func selectPreset(at index: Int) {
         guard presets.indices.contains(index) else { return }
         selectedIndex = index
+    }
+
+    func builtInOverride(forPresetID presetID: String) -> BuiltInStationOverride? {
+        builtInStationOverrides.first { $0.presetID == presetID }
+    }
+
+    func addCustomStation(
+        name: String,
+        url: String,
+        iconID: String = PixelGlyph.headphone.stableID,
+        themeColorHex: String = StationThemeColor.pink.hex
+    ) async throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw CustomStationValidationError.missingName
+        }
+        guard let source = await CustomStationSourceResolver.resolveWithProbe(trimmedURL) else {
+            throw CustomStationValidationError.invalidStationURL
+        }
+        guard !stationConfigurationsContainSource(source) else {
+            throw CustomStationValidationError.duplicateStation
+        }
+
+        var station = CustomStation(
+            kind: source.kind,
+            name: trimmedName,
+            url: trimmedURL,
+            videoID: source.videoID,
+            iconID: iconID,
+            themeColorHex: themeColorHex
+        )
+        station.updatedAt = station.createdAt
+        customStations.append(station)
+        try persistStationConfiguration(selectingCustomID: station.id)
+    }
+
+    func updateCustomStation(
+        id: UUID,
+        name: String,
+        url: String,
+        iconID: String,
+        themeColorHex: String
+    ) async throws {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw CustomStationValidationError.missingName
+        }
+        guard let source = await CustomStationSourceResolver.resolveWithProbe(trimmedURL) else {
+            throw CustomStationValidationError.invalidStationURL
+        }
+        guard !stationConfigurationsContainSource(source, ignoringCustomID: id) else {
+            throw CustomStationValidationError.duplicateStation
+        }
+        guard let index = customStations.firstIndex(where: { $0.id == id }) else { return }
+        let wasCurrent = currentPreset.customStationID == id
+        let previousSourceIdentity = CustomStationSourceResolver.resolve(station: customStations[index])?.identity
+
+        customStations[index].kind = source.kind
+        customStations[index].name = trimmedName
+        customStations[index].url = trimmedURL
+        customStations[index].videoID = source.videoID
+        customStations[index].iconID = iconID
+        customStations[index].themeColorHex = StationThemeColor.validatedHex(themeColorHex)
+        customStations[index].updatedAt = Date()
+        try persistStationConfiguration(
+            selectingCustomID: id,
+            reactivateIfTargetAlreadySelected: wasCurrent && previousSourceIdentity != source.identity
+        )
+    }
+
+    func updateBuiltInStation(
+        presetID: String,
+        name: String,
+        url: String,
+        iconID: String,
+        themeColorHex: String
+    ) async throws {
+        guard LofiiPreset.presets.contains(where: { $0.id == presetID }) else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw CustomStationValidationError.missingName
+        }
+        guard let source = await CustomStationSourceResolver.resolveWithProbe(trimmedURL) else {
+            throw CustomStationValidationError.invalidStationURL
+        }
+        guard !stationConfigurationsContainSource(source, ignoringBuiltInPresetID: presetID) else {
+            throw CustomStationValidationError.duplicateStation
+        }
+        let wasCurrent = currentPreset.id == presetID
+        let previousSourceIdentity = wasCurrent ? Self.sourceIdentity(for: currentPreset.radio.source) : nil
+
+        let override = BuiltInStationOverride(
+            presetID: presetID,
+            kind: source.kind,
+            name: trimmedName,
+            url: trimmedURL,
+            videoID: source.videoID,
+            iconID: iconID,
+            themeColorHex: themeColorHex
+        )
+
+        if let index = builtInStationOverrides.firstIndex(where: { $0.presetID == presetID }) {
+            builtInStationOverrides[index] = override
+        } else {
+            builtInStationOverrides.append(override)
+        }
+        try persistStationConfiguration(
+            selectingPresetID: presetID,
+            reactivateIfTargetAlreadySelected: wasCurrent && previousSourceIdentity != source.identity
+        )
+    }
+
+    func resetBuiltInStation(presetID: String) {
+        builtInStationOverrides.removeAll { $0.presetID == presetID }
+        do {
+            try persistStationConfiguration(
+                selectingPresetID: presetID,
+                reactivateIfTargetAlreadySelected: currentPreset.id == presetID
+            )
+        } catch {
+            DiagnosticLog.appendPlayback(
+                "customStations.resetBuiltInSaveFailed presetID=\(presetID) error=\"\(error.localizedDescription)\""
+            )
+        }
+    }
+
+    func deleteCustomStation(id: UUID) {
+        let selectedID = currentPreset.customStationID
+        customStations.removeAll { $0.id == id }
+        do {
+            try persistStationConfiguration(
+                selectingCustomID: selectedID == id ? nil : selectedID,
+                reactivateIfTargetAlreadySelected: selectedID == id
+            )
+        } catch {
+            DiagnosticLog.appendPlayback(
+                "customStations.deleteSaveFailed id=\(id.uuidString) error=\"\(error.localizedDescription)\""
+            )
+        }
+    }
+
+    private func stationConfigurationsContainSource(
+        _ source: CustomStationSource,
+        ignoringCustomID: UUID? = nil,
+        ignoringBuiltInPresetID: String? = nil
+    ) -> Bool {
+        customStations.contains { station in
+            station.id != ignoringCustomID &&
+                CustomStationSourceResolver.resolve(station: station)?.identity == source.identity
+        } || builtInStationOverrides.contains { station in
+            station.presetID != ignoringBuiltInPresetID &&
+                CustomStationSourceResolver.resolve(override: station)?.identity == source.identity
+        }
+    }
+
+    private func persistStationConfiguration(
+        selectingCustomID customStationID: UUID? = nil,
+        selectingPresetID presetID: String? = nil,
+        reactivateIfTargetAlreadySelected: Bool = false
+    ) throws {
+        let previousPresetID = currentPreset.id
+        try customStationStore.save(
+            CustomStationDocument(
+                stations: customStations,
+                builtInOverrides: builtInStationOverrides
+            )
+        )
+        presets = Self.combinedPresets(
+            customStations: customStations,
+            builtInOverrides: builtInStationOverrides
+        )
+
+        let targetIndex: Int
+        if let presetID,
+           let index = presets.firstIndex(where: { $0.id == presetID }) {
+            targetIndex = index
+        } else if let customStationID,
+           let index = presets.firstIndex(where: { $0.customStationID == customStationID }) {
+            targetIndex = index
+        } else if let index = presets.firstIndex(where: { $0.id == previousPresetID }) {
+            targetIndex = index
+        } else {
+            targetIndex = min(selectedIndex, max(presets.count - 1, 0))
+        }
+
+        if selectedIndex == targetIndex {
+            let targetPresetReplacedCurrent = currentPreset.id != previousPresetID
+            guard reactivateIfTargetAlreadySelected || targetPresetReplacedCurrent else {
+                UserDefaults.standard.set(currentPreset.id, forKey: Self.selectedPresetIDKey)
+                refreshSystemMediaControls()
+                return
+            }
+            activateSelectedPreset()
+        } else {
+            selectedIndex = targetIndex
+        }
     }
 
     func previousStation() {
@@ -1461,6 +1967,7 @@ final class AppModel: ObservableObject {
     }
 
     func cycleVariant() {
+        guard isSceneVariantControlAvailable else { return }
         let all = SceneVariant.allCases
         guard let idx = all.firstIndex(of: currentVariant) else {
             currentVariant = .day
@@ -1472,10 +1979,23 @@ final class AppModel: ObservableObject {
     func toggleVisualMode() {
         let all = VisualMode.allCases
         guard let idx = all.firstIndex(of: visualMode) else {
-            visualMode = .cinematic
+            visualMode = all.first ?? .scene
             return
         }
         visualMode = all[(idx + 1) % all.count]
+    }
+
+    func selectScene(_ scene: SceneAsset) {
+        currentSceneID = scene.id
+        if visualMode != .scene {
+            visualMode = .scene
+        }
+    }
+
+    func nextScene() {
+        guard !sceneChoices.isEmpty else { return }
+        let currentIndex = sceneChoices.firstIndex(where: { $0.id == currentScene.id }) ?? 0
+        selectScene(sceneChoices[(currentIndex + 1) % sceneChoices.count])
     }
 
     func toggleBongoOverlay() {
@@ -1494,12 +2014,17 @@ final class AppModel: ObservableObject {
         bongoDesktopMaskTint = isBongoDesktopMaskEnabled ? .hidden : .modelDynamic
     }
 
-    func nextGif() {
-        guard !gifAssets.isEmpty else { return }
-        let nextIndex = (currentGifIndex + 1) % gifAssets.count
-        currentGifIndex = nextIndex
-        if visualMode != .gif {
-            visualMode = .gif
+    func nextVisualMedia() {
+        let assets = effectiveVisualMediaAssets
+        guard !assets.isEmpty else { return }
+        let currentIndex = currentVisualMedia.flatMap { current in
+            assets.firstIndex(of: current)
+        } ?? currentVisualMediaIndex
+        let nextIndex = (currentIndex + 1) % assets.count
+        currentVisualMediaIndex = nextIndex
+        currentVisualMediaID = assets[nextIndex].id
+        if visualMode != .media {
+            visualMode = .media
         }
     }
 
@@ -1511,6 +2036,27 @@ final class AppModel: ObservableObject {
         DiagnosticLog.appendPlayback(
             "model.syncPlayback isPlaying=\(isPlaying) preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) currentTrack=\"\(currentTrack?.title ?? "nil")\""
         )
+        if currentPreset.radio.source.isYouTube {
+            cancelPlaybackRecovery()
+            resetChillhopPlaybackState()
+            audioEngine.stop(reason: "youtube-station-active")
+            refreshLiveTrackLoop()
+            refreshPlaybackWatchdog()
+            if currentTrack == nil {
+                Task {
+                    await loadLiveTrack(replacingCurrentItem: true)
+                }
+            }
+            isBuffering = false
+            if !isPlaying {
+                isYouTubeBuffering = false
+            }
+            streamStatus = isPlaying
+                ? (isYouTubeBuffering ? "YouTube buffering…" : "Playing on YouTube")
+                : "Paused"
+            return
+        }
+
         if isPlaying {
             // Optimistically flip the spinner on so the play button responds
             // the instant it's pressed, even before AVPlayer's KVO catches
@@ -1542,7 +2088,7 @@ final class AppModel: ObservableObject {
     private func refreshLiveTrackLoop() {
         streamRefreshTimer?.invalidate()
         streamRefreshTimer = nil
-        guard isPlaying else { return }
+        guard isPlaying, !currentPreset.radio.source.isYouTube else { return }
         streamRefreshTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.loadLiveTrack(replacingCurrentItem: false)
@@ -1556,7 +2102,7 @@ final class AppModel: ObservableObject {
         lastPlaybackWatchdogSample = nil
         stalledPlaybackWatchdogTicks = 0
 
-        guard isPlaying else { return }
+        guard isPlaying, !currentPreset.radio.source.isYouTube else { return }
         playbackWatchdogTimer = Timer.scheduledTimer(withTimeInterval: Self.playbackWatchdogInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.evaluatePlaybackWatchdog()
@@ -1565,6 +2111,12 @@ final class AppModel: ObservableObject {
     }
 
     private func evaluatePlaybackWatchdog() {
+        guard !currentPreset.radio.source.isYouTube else {
+            lastPlaybackWatchdogSample = nil
+            stalledPlaybackWatchdogTicks = 0
+            isBuffering = false
+            return
+        }
         guard isPlaying, let currentTrack else {
             lastPlaybackWatchdogSample = nil
             stalledPlaybackWatchdogTicks = 0
@@ -1661,33 +2213,26 @@ final class AppModel: ObservableObject {
                 streamStatus = "Stream unavailable"
             }
         case let .directStream(trackID, url):
-            resetChillhopPlaybackState(clearPreparedTrack: false)
-            let streamTrack = LiveTrack.directStream(
-                id: trackID,
-                title: currentPreset.radio.displayName,
-                artists: currentPreset.radio.badgeSubtitle,
-                streamURL: url
+            await loadDirectMediaTrack(
+                provider: "direct",
+                trackID: trackID,
+                url: url,
+                replacingCurrentItem: replacingCurrentItem
             )
-            let trackChanged = currentTrack?.id != streamTrack.id || currentTrack?.streamURL != streamTrack.streamURL
-            if trackChanged {
-                DiagnosticLog.appendPlayback(
-                    "model.loadTrack provider=direct replacing=\(replacingCurrentItem) trackChanged=true title=\"\(streamTrack.title)\" url=\(streamTrack.streamURL.absoluteString)"
-                )
-            }
-            currentTrack = streamTrack
-
-            if isPlaying {
-                playCurrentTrack(replacingCurrentItem: replacingCurrentItem || trackChanged)
-            } else {
-                streamStatus = "Ready · \(currentPreset.radio.displayName)"
-            }
+        case let .directVideo(trackID, url):
+            await loadDirectMediaTrack(
+                provider: "directVideo",
+                trackID: trackID,
+                url: url,
+                replacingCurrentItem: replacingCurrentItem
+            )
         case let .radioCo(trackID, stationID):
             resetChillhopPlaybackState(clearPreparedTrack: false)
             do {
                 let snapshot = try await radioCoService.fetchSnapshot(
                     stationID: stationID,
                     trackID: trackID,
-                    fallbackTitle: currentPreset.radio.displayName,
+                    fallbackTitle: currentPreset.displayName,
                     fallbackArtists: currentPreset.radio.badgeSubtitle
                 )
                 let streamTrack = snapshot.track
@@ -1720,10 +2265,92 @@ final class AppModel: ObservableObject {
                     streamStatus = "Stream unavailable"
                 }
             }
+        case let .youtube(videoID):
+            resetChillhopPlaybackState(clearPreparedTrack: false)
+            audioEngine.stop(reason: "youtube-station-loaded")
+            isBuffering = false
+            let streamURL = URL(string: "https://www.youtube.com/watch?v=\(videoID)")!
+            let streamTrack = LiveTrack.directStream(
+                id: Self.stableNegativeID(forYouTubeVideoID: videoID),
+                title: currentPreset.displayName,
+                artists: currentPreset.radio.providerName,
+                streamURL: streamURL
+            )
+            currentTrack = streamTrack
+            streamStatus = isPlaying ? "Playing on YouTube" : "Ready · YouTube"
+            DiagnosticLog.appendPlayback(
+                "model.loadTrack provider=youtube videoID=\(videoID) replacing=\(replacingCurrentItem) title=\"\(streamTrack.title)\""
+            )
+            if let metadata = await StationMetadataService.fetchYouTube(videoID: videoID),
+               currentPreset.radio.source.youtubeVideoID == videoID {
+                currentTrack = metadata.liveTrack(
+                    id: Self.stableNegativeID(forYouTubeVideoID: videoID),
+                    streamURL: streamURL
+                )
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrackMetadata provider=youtube videoID=\(videoID) title=\"\(metadata.title)\" artists=\"\(metadata.artists)\""
+                )
+            }
         }
     }
 
+    private func loadDirectMediaTrack(
+        provider: String,
+        trackID: Int,
+        url: URL,
+        replacingCurrentItem: Bool
+    ) async {
+        resetChillhopPlaybackState(clearPreparedTrack: false)
+        let sourceStableID = currentPreset.radio.source.stableID
+        let reusableDirectMetadata: LiveTrack? = {
+            guard let currentTrack,
+                  currentTrack.id == trackID,
+                  currentTrack.streamURL == url,
+                  currentTrack.hasRealMetadata
+            else { return nil }
+            return currentTrack
+        }()
+        let fallbackTrack = LiveTrack.directStream(
+            id: trackID,
+            title: reusableDirectMetadata?.title ?? currentPreset.displayName,
+            artists: reusableDirectMetadata?.artists ?? currentPreset.radio.badgeSubtitle,
+            streamURL: url,
+            image: reusableDirectMetadata?.image,
+            metadataKind: reusableDirectMetadata?.metadataKind ?? .fallback
+        )
+        let trackChanged = currentTrack?.id != fallbackTrack.id || currentTrack?.streamURL != fallbackTrack.streamURL
+        if trackChanged {
+            DiagnosticLog.appendPlayback(
+                "model.loadTrack provider=\(provider) replacing=\(replacingCurrentItem) trackChanged=true title=\"\(fallbackTrack.title)\" url=\(fallbackTrack.streamURL.absoluteString)"
+            )
+        }
+        currentTrack = fallbackTrack
+
+        if isPlaying {
+            playCurrentTrack(replacingCurrentItem: replacingCurrentItem || trackChanged)
+        } else {
+            streamStatus = "Ready · \(currentPreset.displayName)"
+        }
+
+        guard let metadata = await StationMetadataService.fetchICY(url: url),
+              currentPreset.radio.source.stableID == sourceStableID
+        else { return }
+
+        let enhancedTrack = metadata.liveTrack(id: trackID, streamURL: url)
+        currentTrack = enhancedTrack
+        streamStatus = isPlaying
+            ? "Live stream · \(enhancedTrack.title)"
+            : "Ready · \(enhancedTrack.title)"
+        DiagnosticLog.appendPlayback(
+            "model.loadTrackMetadata provider=\(provider) title=\"\(enhancedTrack.title)\" artists=\"\(enhancedTrack.artists)\" image=\"\(enhancedTrack.image?.absoluteString ?? "nil")\""
+        )
+    }
+
     private func playCurrentTrack(replacingCurrentItem: Bool) {
+        guard !currentPreset.radio.source.isYouTube else {
+            streamStatus = isPlaying ? "Playing on YouTube" : "Ready · YouTube"
+            return
+        }
         guard let currentTrack else {
             streamStatus = "Loading track…"
             return
@@ -1903,6 +2530,10 @@ final class AppModel: ObservableObject {
     }
 
     private func schedulePlaybackRecovery(_ step: PlaybackRecoveryStep) {
+        guard !currentPreset.radio.source.isYouTube else {
+            cancelPlaybackRecovery()
+            return
+        }
         guard isPlaying, currentTrack != nil else {
             cancelPlaybackRecovery()
             return
@@ -2010,6 +2641,13 @@ final class AppModel: ObservableObject {
     private static func formatSeconds(_ value: TimeInterval) -> String {
         guard value.isFinite else { return "nan" }
         return String(format: "%.2f", value)
+    }
+
+    private static func stableNegativeID(forYouTubeVideoID videoID: String) -> Int {
+        let hash = videoID.unicodeScalars.reduce(0) { partial, scalar in
+            (partial &* 31) &+ Int(scalar.value)
+        }
+        return -100_000 - abs(hash % 800_000)
     }
 
     private func deduplicatedTracks(_ tracks: [LiveTrack]) -> [LiveTrack] {

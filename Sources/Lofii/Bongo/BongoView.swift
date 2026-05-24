@@ -6,14 +6,25 @@ import SwiftUI
 import MetalKit
 import CubismNativeBridge
 
+private extension StageMetalSource {
+    var mediaURL: URL {
+        switch self {
+        case .video(let url), .gif(let url), .image(let url):
+            return url
+        }
+    }
+}
+
 // MARK: - BongoView
 
-/// Top-level Bongo stage. Bongo mode owns the animated background (GIF or
+/// Top-level Bongo stage. Bongo mode owns the animated background (media or
 /// scene video) and Live2D layer so source-sampling effects can run once over
 /// the combined image.
 struct BongoView: View {
     @EnvironmentObject private var model: AppModel
     let isPlaying: Bool
+    let rendersVisualBackground: Bool
+    let appliesCRT: Bool
     /// Forward scroll-wheel volume when the wheel catcher passes hits through the Live2D stage.
     var artworkScrollWheel: ((Double) -> Void)? = nil
     /// Right-click menu on the Metal stage (same as the wheel overlay) when hits pass through.
@@ -22,6 +33,8 @@ struct BongoView: View {
     var body: some View {
         BongoUnifiedStage(
             isPlaying: isPlaying,
+            rendersVisualBackground: rendersVisualBackground,
+            appliesCRT: appliesCRT,
             pack: model.bongoCatPack,
             inputTickRate: model.bongoInputTickRate,
             mouseCursorSpace: model.bongoMouseCursorSpace,
@@ -36,6 +49,8 @@ private struct BongoUnifiedStage: View {
     @EnvironmentObject private var model: AppModel
     @StateObject private var coordinator: BongoCoordinator
     let isPlaying: Bool
+    let rendersVisualBackground: Bool
+    let appliesCRT: Bool
     let pack: BongoCatPack
     let inputTickRate: BongoInputTickRate
     let mouseCursorSpace: BongoMouseCursorSpace
@@ -43,6 +58,7 @@ private struct BongoUnifiedStage: View {
     let artworkContextMenu: (() -> NSMenu)?
 
     @State private var localURL: URL?
+    @State private var visualMediaStageSource: StageMetalSource?
     @State private var transitionSnowURL: URL?
     @State private var transitionSnowOpacity: Double = 1
     @State private var darkFieldOpacity: Double = 0
@@ -50,11 +66,13 @@ private struct BongoUnifiedStage: View {
     @State private var lastSettledVideoKey: String?
     @State private var lastSettledVisualMode: VisualMode?
     @State private var loadError: String?
-    /// Prevents showing a stale URL (e.g. mp4 after switching GIF→cinematic) in `unifiedMetalSource`.
+    /// Prevents showing a stale URL (e.g. mp4 after switching media->scene) in `unifiedMetalSource`.
     @State private var settledLoadSessionKey: String?
 
     init(
         isPlaying: Bool,
+        rendersVisualBackground: Bool = true,
+        appliesCRT: Bool = true,
         pack: BongoCatPack,
         inputTickRate: BongoInputTickRate,
         mouseCursorSpace: BongoMouseCursorSpace,
@@ -62,6 +80,8 @@ private struct BongoUnifiedStage: View {
         artworkContextMenu: (() -> NSMenu)? = nil
     ) {
         self.isPlaying = isPlaying
+        self.rendersVisualBackground = rendersVisualBackground
+        self.appliesCRT = appliesCRT
         self.pack = pack
         self.inputTickRate = inputTickRate
         self.mouseCursorSpace = mouseCursorSpace
@@ -77,23 +97,33 @@ private struct BongoUnifiedStage: View {
     }
 
     private var backgroundTaskKey: String {
+        guard rendersVisualBackground else { return "transparent-overlay" }
         switch model.visualMode {
-        case .cinematic:
-            "\(model.currentScene.id)/\(model.currentVariant.rawValue)"
-        case .gif:
-            model.currentGif?.id ?? ""
-        case .cover:
-            model.currentTrack?.image?.absoluteString ?? "no-cover"
+        case .live:
+            if let directVideoURL = model.currentDirectVideoURL {
+                return "direct-video/\(directVideoURL.absoluteString)"
+            }
+            return model.currentTrack?.image?.absoluteString ?? "no-live-artwork"
+        case .scene:
+            return "\(model.currentScene.id)/\(model.currentVariant.rawValue)"
+        case .media:
+            return model.currentVisualMedia?.id ?? "no-visual-media"
         }
     }
 
     /// Includes **pack** and **reload token** so switching the Live2D model
-    /// always changes the `.task(id:)` value. Previously only scene/GIF id was
+    /// always changes the `.task(id:)` value. Previously only scene/media id was
     /// used — the id stayed the same across pack changes, so the background
     /// loader could skip (or leave `transitionSnowURL` / gate state stale)
     /// while `bongoCatPack` didSet already put Live2D back in “pending”.
     private var loadSessionKey: String {
-        "\(model.visualMode.rawValue)-\(backgroundTaskKey)-\(pack.cacheTag)-\(model.bongoPackReloadToken)"
+        "\(model.visualMode.rawValue)-\(backgroundTaskKey)-\(pack.cacheTag)-\(model.bongoPackReloadToken)-\(model.visualMediaReloadToken)"
+    }
+
+    private var youtubeOwnsPrimaryReadiness: Bool {
+        !rendersVisualBackground &&
+            model.visualMode == .live &&
+            model.currentYouTubeVideoID != nil
     }
 
     /// True when this `loadSessionKey` has finished loading (no transition snow,
@@ -102,11 +132,28 @@ private struct BongoUnifiedStage: View {
     /// `settledLoadSessionKey` — that was re-tearing Metal + Cubism and could
     /// leave snow visible while `markPrimaryVisualMediaReady` fired twice.
     private var isBongoBackgroundFullyReadyForCurrentLoadSession: Bool {
+        guard rendersVisualBackground else {
+            return settledLoadSessionKey == loadSessionKey && localURL == nil && loadError == nil
+        }
         guard settledLoadSessionKey == loadSessionKey else { return false }
         guard transitionSnowURL == nil, loadError == nil else { return false }
         guard darkFieldOpacity == 0 else { return false }
         switch model.visualMode {
-        case .cinematic:
+        case .live:
+            if let directVideoURL = model.currentDirectVideoURL {
+                let cacheKey = "direct-video/\(directVideoURL.absoluteString)"
+                guard lastSettledVideoKey == cacheKey else { return false }
+                guard localURL == directVideoURL else { return false }
+                return true
+            }
+            guard let artworkURL = model.currentTrack?.image else {
+                return localURL == nil
+            }
+            guard lastSettledAssetId == artworkURL.absoluteString else { return false }
+            guard let disk = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL),
+                  localURL == disk else { return false }
+            return true
+        case .scene:
             let asset = model.currentScene
             let variant = model.currentVariant
             let cacheKey = "\(asset.id)/\(variant.rawValue)"
@@ -114,39 +161,37 @@ private struct BongoUnifiedStage: View {
             guard let cached = SceneVideoCache.cachedURLIfAvailable(for: asset, variant: variant),
                   localURL == cached else { return false }
             return true
-        case .gif:
-            guard let asset = model.currentGif else { return false }
-            guard lastSettledAssetId == asset.id else { return false }
-            guard let disk = GifCache.cachedURLIfAvailable(for: asset),
-                  localURL == disk else { return false }
-            return true
-        case .cover:
-            guard let artworkURL = model.currentTrack?.image else { return false }
-            guard lastSettledAssetId == artworkURL.absoluteString else { return false }
-            guard let disk = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL),
-                  localURL == disk else { return false }
+        case .media:
+            guard let media = model.currentVisualMedia else { return false }
+            guard lastSettledAssetId == media.id else { return false }
+            guard let source = visualMediaStageSource,
+                  localURL == source.mediaURL else { return false }
             return true
         }
     }
 
     private var unifiedMetalSource: StageMetalSource? {
+        guard rendersVisualBackground else { return nil }
         guard let localURL else { return nil }
         switch model.visualMode {
-        case .cinematic:
+        case .live:
+            guard settledLoadSessionKey == loadSessionKey else { return nil }
+            if model.currentDirectVideoURL != nil {
+                return .video(localURL)
+            }
+            return .image(localURL)
+        case .scene:
             guard settledLoadSessionKey == loadSessionKey else { return nil }
             return .video(localURL)
-        case .gif:
+        case .media:
             guard settledLoadSessionKey == loadSessionKey else { return nil }
-            return .gif(localURL)
-        case .cover:
-            guard settledLoadSessionKey == loadSessionKey || lastSettledVisualMode == .cover else { return nil }
-            return .image(localURL)
+            return visualMediaStageSource ?? .gif(localURL)
         }
     }
 
     var body: some View {
         ZStack {
-            if model.visualMode == .cinematic {
+            if rendersVisualBackground, model.visualMode == .scene {
                 LinearGradient(
                     colors: [
                         model.currentScene.palette.backdropTop,
@@ -155,23 +200,24 @@ private struct BongoUnifiedStage: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-            } else {
+            } else if rendersVisualBackground {
                 Color(white: 0.02)
             }
 
-            if let source = unifiedMetalSource {
+            if unifiedMetalSource != nil || !rendersVisualBackground || (model.visualMode == .live && model.currentDirectVideoURL == nil) {
                 let crtCurvationUniforms = model.crt.resolvedCurvationUniforms(
-                    active: model.crt.enabled && model.crt.curvation
+                    active: appliesCRT && model.crt.enabled && model.crt.curvation
                 )
                 let crtVignetteAlpha = model.crt.resolvedVignetteAlpha(
-                    active: model.crt.enabled && model.crt.vignette
+                    active: appliesCRT && model.crt.enabled && model.crt.vignette
                 )
                 let bongoShatteredGlass = model.shatteredGlass.resolvedForDisplayPipeline(
-                    crtMasterEnabled: model.crt.enabled
+                    crtMasterEnabled: appliesCRT && model.crt.enabled
                 )
                 GeometryReader { geo in
                     BongoUnifiedMetalView(
-                        background: source,
+                        background: unifiedMetalSource,
+                        rendersVisualBackground: rendersVisualBackground,
                         isPlaying: isPlaying,
                         renderFramesPerSecond: inputTickRate.framesPerSecond,
                         bongoCoordinator: coordinator,
@@ -180,9 +226,9 @@ private struct BongoUnifiedStage: View {
                         maxLogicalStageSize: pack.maxLogicalStageSize(scaledBy: model.bongoStageScaleTier),
                         stagePlacement: model.bongoStagePlacement,
                         isStageDragLocked: model.bongoStageDragLocked,
-                        backgroundTransitionSnowURL: model.visualMode == .cover ? transitionSnowURL : nil,
-                        backgroundTransitionSnowOpacity: model.visualMode == .cover ? transitionSnowOpacity : 0,
-                        backgroundDarkFieldOpacity: model.visualMode == .cover ? darkFieldOpacity : 0,
+                        backgroundTransitionSnowURL: model.visualMode == .live ? transitionSnowURL : nil,
+                        backgroundTransitionSnowOpacity: model.visualMode == .live ? transitionSnowOpacity : 0,
+                        backgroundDarkFieldOpacity: model.visualMode == .live ? darkFieldOpacity : 0,
                         desktopTint: model.bongoDesktopMaskTint,
                         pressedKeyImages: coordinator.pressedKeyImages,
                         artworkScrollWheel: artworkScrollWheel,
@@ -192,11 +238,11 @@ private struct BongoUnifiedStage: View {
                         curvationOverscan: crtCurvationUniforms.overscan,
                         curvationBorderSize: crtCurvationUniforms.border,
                         vignetteAlpha: crtVignetteAlpha,
-                        motionBlurEnabled: model.crt.enabled && model.crt.motionBlur,
+                        motionBlurEnabled: appliesCRT && model.crt.enabled && model.crt.motionBlur,
                         motionBlurStrength: model.crt.motionBlurStrength.resolvedStrength,
-                        chromaticAberrationEnabled: model.crt.enabled && model.crt.chromaticAberration,
+                        chromaticAberrationEnabled: appliesCRT && model.crt.enabled && model.crt.chromaticAberration,
                         chromaticAberrationStrength: model.crt.chromaticAberrationStrength.resolvedStrength,
-                        scanlinesEnabled: model.crt.enabled && model.crt.scanlines,
+                        scanlinesEnabled: appliesCRT && model.crt.enabled && model.crt.scanlines,
                         scanlineOpacity: model.crt.scanlineOpacity.resolvedOpacity(for: model.visualMode),
                         scanlineDensity: model.crt.scanlineDensity.pitch,
                         shatteredGlassOpacity: bongoShatteredGlass.opacity,
@@ -213,11 +259,11 @@ private struct BongoUnifiedStage: View {
                     .frame(width: geo.size.width, height: geo.size.height)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .id(metalIdentityTag(for: source))
+                .id(metalIdentityTag(for: unifiedMetalSource))
                 .allowsHitTesting(model.visualStageReady)
             }
 
-            if model.visualMode != .cover, let transitionSnowURL {
+            if model.visualMode != .live, let transitionSnowURL {
                 SnowOverlayView(url: transitionSnowURL)
                     .opacity(transitionSnowOpacity)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -225,7 +271,7 @@ private struct BongoUnifiedStage: View {
             }
 
             Color.black
-                .opacity(model.visualMode == .cover ? 0 : darkFieldOpacity)
+                .opacity(model.visualMode == .live ? 0 : darkFieldOpacity)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .allowsHitTesting(false)
 
@@ -246,15 +292,25 @@ private struct BongoUnifiedStage: View {
             if isBongoBackgroundFullyReadyForCurrentLoadSession {
                 return
             }
-            model.resetVisualStageLoadingGate(updateBongoLayer: false)
+            if !youtubeOwnsPrimaryReadiness {
+                model.resetVisualStageLoadingGate(updateBongoLayer: false)
+            }
             settledLoadSessionKey = nil
+            if !rendersVisualBackground {
+                await loadTransparentOverlay(markPrimaryReady: !youtubeOwnsPrimaryReadiness)
+                return
+            }
             switch model.visualMode {
-            case .gif:
+            case .live:
+                if let directVideoURL = model.currentDirectVideoURL {
+                    await loadDirectLiveVideo(directVideoURL)
+                } else {
+                    await loadCoverArtwork()
+                }
+            case .media:
                 await loadGif()
-            case .cinematic:
-                await loadCinematicVideo()
-            case .cover:
-                await loadCoverArtwork()
+            case .scene:
+                await loadSceneVideo()
             }
         }
         .onAppear {
@@ -280,22 +336,40 @@ private struct BongoUnifiedStage: View {
         }
     }
 
-    private func metalIdentityTag(for source: StageMetalSource) -> String {
+    private func metalIdentityTag(for source: StageMetalSource?) -> String {
         let tok = model.bongoPackReloadToken
         switch source {
+        case nil:
+            return "transparent-overlay-\(pack.cacheTag)-\(tok)"
         case .gif:
-            return "\(model.currentGif?.id ?? "gif")-\(pack.cacheTag)-\(tok)"
-        case .video:
-            return "\(model.currentScene.id)-\(model.currentVariant.rawValue)-\(pack.cacheTag)-\(tok)"
+            return "\(model.currentVisualMedia?.id ?? "media")-\(model.visualMediaReloadToken)-\(pack.cacheTag)-\(tok)"
+        case .video(let url):
+            return "\(url.absoluteString)-\(pack.cacheTag)-\(tok)"
         case .image(let url):
             return "\(url.absoluteString)-\(pack.cacheTag)-\(tok)"
         }
     }
 
     @MainActor
+    private func loadTransparentOverlay(markPrimaryReady: Bool) async {
+        localURL = nil
+        visualMediaStageSource = nil
+        loadError = nil
+        darkFieldOpacity = 0
+        transitionSnowOpacity = 1
+        transitionSnowURL = nil
+        settledLoadSessionKey = loadSessionKey
+        lastSettledVisualMode = model.visualMode
+        if markPrimaryReady {
+            model.markPrimaryVisualMediaReady()
+        }
+    }
+
+    @MainActor
     private func loadGif() async {
-        guard let asset = model.currentGif else {
+        guard let media = model.currentVisualMedia else {
             localURL = nil
+            visualMediaStageSource = nil
             loadError = nil
             settledLoadSessionKey = nil
             lastSettledVisualMode = nil
@@ -303,22 +377,23 @@ private struct BongoUnifiedStage: View {
         }
 
         loadError = nil
-        let diskCached = GifCache.cachedURLIfAvailable(for: asset)
+        let cachedSource = media.cachedStageMetalSourceIfAvailable()
 
-        if let diskCached,
-           localURL == diskCached,
-           lastSettledAssetId == asset.id,
+        if let cachedSource,
+           localURL == cachedSource.mediaURL,
+           visualMediaStageSource == cachedSource,
+           lastSettledAssetId == media.id,
            transitionSnowURL == nil {
             darkFieldOpacity = 0
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .gif
+            lastSettledVisualMode = .media
             model.markPrimaryVisualMediaReady()
             return
         }
 
-        let keyChanged = lastSettledAssetId != nil && lastSettledAssetId != asset.id
+        let keyChanged = lastSettledAssetId != nil && lastSettledAssetId != media.id
         if let snow = await GifCache.shared.randomCachedStatic() {
             transitionSnowURL = snow
         } else if transitionSnowURL == nil {
@@ -327,22 +402,30 @@ private struct BongoUnifiedStage: View {
         TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
 
         do {
-            let url = try await GifCache.shared.ensureLocal(for: asset)
+            let source = try await media.resolveStageMetalSource()
             guard !Task.isCancelled else { return }
-            localURL = url
-            lastSettledAssetId = asset.id
+            localURL = source.mediaURL
+            visualMediaStageSource = source
+            lastSettledAssetId = media.id
             loadError = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .gif
+            lastSettledVisualMode = .media
+            DiagnosticLog.appendPlayback(
+                "visualMedia.bongoResolved id=\"\(media.id)\" kind=\(media.kind.rawValue) url=\"\(source.mediaURL.path)\""
+            )
             model.markPrimaryVisualMediaReady()
         } catch {
             guard !Task.isCancelled else { return }
-            localURL = diskCached
-            lastSettledAssetId = asset.id
-            loadError = diskCached == nil ? "GIF unavailable" : nil
-            if diskCached != nil {
+            localURL = cachedSource?.mediaURL
+            visualMediaStageSource = cachedSource
+            lastSettledAssetId = media.id
+            loadError = cachedSource == nil ? "Media unavailable" : nil
+            DiagnosticLog.appendPlayback(
+                "visualMedia.bongoResolveFailed id=\"\(media.id)\" kind=\(media.kind.rawValue) cached=\(cachedSource != nil) error=\"\(error.localizedDescription)\""
+            )
+            if cachedSource != nil {
                 settledLoadSessionKey = loadSessionKey
-                lastSettledVisualMode = .gif
+                lastSettledVisualMode = .media
             } else {
                 lastSettledVisualMode = nil
             }
@@ -370,7 +453,7 @@ private struct BongoUnifiedStage: View {
     }
 
     @MainActor
-    private func loadCinematicVideo() async {
+    private func loadSceneVideo() async {
         let asset = model.currentScene
         let variant = model.currentVariant
         let cacheKey = "\(asset.id)/\(variant.rawValue)"
@@ -384,7 +467,7 @@ private struct BongoUnifiedStage: View {
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .cinematic
+            lastSettledVisualMode = .scene
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -408,7 +491,7 @@ private struct BongoUnifiedStage: View {
             }
             loadError = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .cinematic
+            lastSettledVisualMode = .scene
         } else {
             localURL = nil
             loadError = nil
@@ -422,7 +505,7 @@ private struct BongoUnifiedStage: View {
                 }
                 localURL = url
                 settledLoadSessionKey = loadSessionKey
-                lastSettledVisualMode = .cinematic
+                lastSettledVisualMode = .scene
             } catch {
                 guard !Task.isCancelled else {
                     darkFieldOpacity = 0
@@ -473,13 +556,27 @@ private struct BongoUnifiedStage: View {
     }
 
     @MainActor
+    private func loadDirectLiveVideo(_ url: URL) async {
+        let cacheKey = "direct-video/\(url.absoluteString)"
+        localURL = url
+        loadError = nil
+        darkFieldOpacity = 0
+        transitionSnowOpacity = 1
+        transitionSnowURL = nil
+        lastSettledVideoKey = cacheKey
+        settledLoadSessionKey = loadSessionKey
+        lastSettledVisualMode = .live
+        model.markPrimaryVisualMediaReady()
+    }
+
+    @MainActor
     private func loadCoverArtwork() async {
         guard let artworkURL = model.currentTrack?.image else {
             localURL = nil
             lastSettledAssetId = nil
             loadError = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .cover
+            lastSettledVisualMode = .live
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -495,7 +592,7 @@ private struct BongoUnifiedStage: View {
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .cover
+            lastSettledVisualMode = .live
             model.markPrimaryVisualMediaReady()
             return
         }
@@ -515,7 +612,7 @@ private struct BongoUnifiedStage: View {
             lastSettledAssetId = artworkURL.absoluteString
             loadError = nil
             settledLoadSessionKey = loadSessionKey
-            lastSettledVisualMode = .cover
+            lastSettledVisualMode = .live
             model.markPrimaryVisualMediaReady()
         } catch {
             guard !Task.isCancelled else { return }
@@ -524,7 +621,7 @@ private struct BongoUnifiedStage: View {
             loadError = diskCached == nil ? "Cover unavailable" : nil
             if diskCached != nil {
                 settledLoadSessionKey = loadSessionKey
-                lastSettledVisualMode = .cover
+                lastSettledVisualMode = .live
             } else {
                 lastSettledVisualMode = nil
             }
@@ -686,7 +783,8 @@ private final class BongoStageMTKView: MTKView {
 }
 
 private struct BongoUnifiedMetalView: NSViewRepresentable {
-    let background: StageMetalSource
+    let background: StageMetalSource?
+    let rendersVisualBackground: Bool
     let isPlaying: Bool
     let renderFramesPerSecond: Int
     let bongoCoordinator: BongoCoordinator
@@ -751,6 +849,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     private func update(renderer: BongoUnifiedMetalRenderer) {
         renderer.update(
             background: background,
+            rendersVisualBackground: rendersVisualBackground,
             isPlaying: isPlaying,
             renderFramesPerSecond: renderFramesPerSecond,
             pack: pack,
@@ -847,6 +946,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var offscreenSize: CGSize = .zero
 
     private var backgroundSource: StageMetalSource?
+    private var rendersVisualBackground = true
     private var isPlaying = true
     private var pack: BongoCatPack = .bundled(.standard)
     private var maxLogicalStageSize: CGSize = .zero
@@ -936,6 +1036,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         view.device = metalDevice
         view.delegate = self
         StageMetalMTKRuntime.applyBasePresentation(to: view, framebufferOnly: false)
+        applyLayerOpacityPolicy(to: view)
 
         guard let metalDevice else { return }
         commandQueue = metalDevice.makeCommandQueue()
@@ -956,7 +1057,8 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func update(
-        background: StageMetalSource,
+        background: StageMetalSource?,
+        rendersVisualBackground: Bool,
         isPlaying: Bool,
         renderFramesPerSecond: Int,
         pack: BongoCatPack,
@@ -995,6 +1097,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         self.onLive2DWorkspaceReady = onLive2DWorkspaceReady
         self.onStagePlacementRatioChanged = onStagePlacementRatioChanged
         let backgroundChanged = self.backgroundSource != background
+        let visualBackgroundChanged = self.rendersVisualBackground != rendersVisualBackground
         let playbackChanged = self.isPlaying != isPlaying
         let cappedFPS = StageMetalMTKRuntime.clampedPreferredFramesPerSecond(renderFramesPerSecond)
         let renderRateChanged = self.renderFramesPerSecond != cappedFPS
@@ -1004,13 +1107,21 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             self.backgroundDarkFieldOpacity != backgroundDarkFieldOpacity
 
         self.isPlaying = isPlaying
+        self.rendersVisualBackground = rendersVisualBackground
         self.renderFramesPerSecond = cappedFPS
         if renderRateChanged {
             view?.preferredFramesPerSecond = cappedFPS
         }
         if backgroundChanged {
             self.backgroundSource = background
-            configureBackground(background)
+            if let background {
+                configureBackground(background)
+            } else {
+                clearBackgroundMediaState()
+            }
+        }
+        if visualBackgroundChanged || backgroundChanged {
+            applyLayerOpacityPolicy(to: view)
         }
         if self.backgroundTransitionSnowURL != backgroundTransitionSnowURL {
             configureBackgroundTransitionSnow(url: backgroundTransitionSnowURL)
@@ -1129,6 +1240,16 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    private func applyLayerOpacityPolicy(to view: MTKView?) {
+        guard let view else { return }
+        let alpha: Double = rendersVisualBackground ? 1 : 0
+        view.clearColor = MTLClearColorMake(0, 0, 0, alpha)
+        view.layer?.isOpaque = rendersVisualBackground
+        view.layer?.backgroundColor = rendersVisualBackground
+            ? NSColor.black.cgColor
+            : NSColor.clear.cgColor
+    }
+
     private func stageLayout(in view: NSView) -> (container: CGSize, stage: CGSize, origin: CGPoint)? {
         let container = pointsLayoutContainer(view: view)
         guard container.width > 0, container.height > 0 else { return nil }
@@ -1225,16 +1346,25 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         guard let offscreenTexture else { return }
 
         let (bgTexture, bgSize) = currentBackgroundTextureAndSize()
-        drawStageTexture(
-            commandBuffer: commandBuffer,
-            target: offscreenTexture,
-            sourceTexture: bgTexture,
-            sourceSize: bgSize,
-            viewportSize: viewportSize,
-            clear: true,
-            effectsEnabled: false,
-            pipelineState: stagePipelineState
-        )
+        if bgTexture != nil || rendersVisualBackground {
+            drawStageTexture(
+                commandBuffer: commandBuffer,
+                target: offscreenTexture,
+                sourceTexture: bgTexture,
+                sourceSize: bgSize,
+                viewportSize: viewportSize,
+                clear: true,
+                clearAlpha: rendersVisualBackground ? 1 : 0,
+                effectsEnabled: false,
+                pipelineState: stagePipelineState
+            )
+        } else {
+            clearStageTarget(
+                commandBuffer: commandBuffer,
+                target: offscreenTexture,
+                alpha: 0
+            )
+        }
         drawBackgroundTransitionEffects(
             commandBuffer: commandBuffer,
             target: offscreenTexture,
@@ -1315,6 +1445,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         sourceSize: CGSize,
         viewportSize: CGSize,
         clear: Bool,
+        clearAlpha: Double = 1,
         effectsEnabled: Bool,
         pipelineState: MTLRenderPipelineState
     ) {
@@ -1322,7 +1453,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         descriptor.colorAttachments[0].texture = target
         descriptor.colorAttachments[0].loadAction = clear ? .clear : .load
         descriptor.colorAttachments[0].storeAction = .store
-        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1)
+        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, clearAlpha)
 
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
         encoder.setRenderPipelineState(pipelineState)
@@ -1338,6 +1469,19 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         encoder.setFragmentBytes(&uniforms, length: MemoryLayout<StageUniforms>.stride, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+    }
+
+    private func clearStageTarget(
+        commandBuffer: MTLCommandBuffer,
+        target: MTLTexture,
+        alpha: Double
+    ) {
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, alpha)
+        commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)?.endEncoding()
     }
 
     private func drawFinalStage(
@@ -1495,7 +1639,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
         encoder.setRenderPipelineState(quadPipelineState)
         for key in pressedKeyImages.sorted() {
-            if let texture = keyTexture(stem: key) {
+            if let texture = keyTexture(id: key) {
                 drawStageTextureQuad(texture: texture, encoder: encoder, viewportSize: viewportSize)
             }
         }
@@ -2018,16 +2162,21 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         return bongoBackgroundTexture
     }
 
-    private func keyTexture(stem: String) -> MTLTexture? {
+    private func keyTexture(id: String) -> MTLTexture? {
         if keyTexturePack != pack {
             keyTextures.removeAll(keepingCapacity: true)
             keyTexturePack = pack
         }
-        if let cached = keyTextures[stem] {
+        if let cached = keyTextures[id] {
             return cached
         }
-        let texture = loadPNG(resource: stem, baseDirectory: pack.leftKeysDirectoryURL)
-        keyTextures[stem] = texture
+        let texture: MTLTexture?
+        if let overlay = BongoKeyOverlay(id: id) {
+            texture = loadPNG(resource: overlay.stem, baseDirectory: pack.keyDirectoryURL(for: overlay.side))
+        } else {
+            texture = loadPNG(resource: id, baseDirectory: pack.leftKeysDirectoryURL)
+        }
+        keyTextures[id] = texture
         return texture
     }
 
@@ -2093,6 +2242,17 @@ private extension BongoDesktopMaskTint {
             return SIMD4<Float>(5.0 / 255.0, 5.0 / 255.0, 5.0 / 255.0, 1)
         case .hidden:
             return .zero
+        }
+    }
+}
+
+private extension BongoCatPack {
+    func keyDirectoryURL(for side: BongoKeyOverlaySide) -> URL? {
+        switch side {
+        case .left:
+            return leftKeysDirectoryURL
+        case .right:
+            return rightKeysDirectoryURL
         }
     }
 }
@@ -2341,10 +2501,10 @@ final class BongoCoordinator: ObservableObject {
     /// Image stems (e.g. "KeyQ", "Space") of keys currently held down; drawn by `BongoUnifiedMetalRenderer`.
     @Published var pressedKeyImages: Set<String> = []
 
-    private let supportedKeyImages: Set<String>
+    private let supportedKeyImages: Set<BongoKeyOverlay>
     /// Optional `resources/bongo-parameter-map.json`: maps app-side IDs (e.g. `CatParamRightHandDown`) to this model’s Live2D parameter `Id` strings when imported MOCs use different names.
     private let parameterRemap: [String: String]
-    /// Optional `resources/bongo-arrow-overlay-params.json`: `left-keys` stem -> extra MOC param Id while that overlay is held.
+    /// Optional `resources/bongo-arrow-overlay-params.json`: key stem -> extra MOC param Id while that overlay is held.
     private let arrowOverlayAccessoryParamByStem: [String: String]
     private var monitor: BongoInputMonitor?
     private var isModelLoaded = false
@@ -2694,18 +2854,21 @@ final class BongoCoordinator: ObservableObject {
         }
     }
 
-    private static func loadSupportedKeyImages(for pack: BongoCatPack) -> Set<String> {
-        guard let directoryURL = pack.leftKeysDirectoryURL else {
-            return []
+    private static func loadSupportedKeyImages(for pack: BongoCatPack) -> Set<BongoKeyOverlay> {
+        var overlays = Set<BongoKeyOverlay>()
+        for side in [BongoKeyOverlaySide.left, .right] {
+            guard let directoryURL = pack.keyDirectoryURL(for: side) else { continue }
+            let urls = (try? FileManager.default.contentsOfDirectory(
+                at: directoryURL,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )) ?? []
+
+            for url in urls where url.pathExtension == "png" {
+                overlays.insert(BongoKeyOverlay(side: side, stem: url.deletingPathExtension().lastPathComponent))
+            }
         }
-
-        let urls = (try? FileManager.default.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: nil,
-            options: [.skipsHiddenFiles]
-        )) ?? []
-
-        return Set(urls.filter { $0.pathExtension == "png" }.map { $0.deletingPathExtension().lastPathComponent })
+        return overlays
     }
 
     /// JSON object of string → string, e.g. `{ "CatParamRightHandDown": "YourModelParamId" }`.
@@ -2718,7 +2881,7 @@ final class BongoCoordinator: ObservableObject {
         return decoded
     }
 
-    /// JSON object: `left-keys` stem → MOC parameter Id to drive while overlay key is held.
+    /// JSON object: key overlay stem → MOC parameter Id to drive while overlay key is held.
     private static func loadArrowOverlayAccessoryMap(for pack: BongoCatPack) -> [String: String] {
         guard let url = pack.resourcesDirectoryURL?.appendingPathComponent("bongo-arrow-overlay-params.json", isDirectory: false),
               FileManager.default.fileExists(atPath: url.path),

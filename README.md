@@ -2,7 +2,7 @@
   <br />
   <img src="./assets/app-icon-transparent.png" alt="Lofii app icon" width="112" height="112" />
   <h1>Lofii</h1>
-  <p><strong>Native macOS</strong> <strong>lofi radio</strong> plus <strong>moving desk scenery</strong>: stream stations, loop cinematic or GIF scenes, or hang out with <strong>Live2D BongoCat</strong> — a compact on-screen presence so <strong>sound and motion</strong> stay in view without turning into another full-size app.</p>
+  <p><strong>Native macOS</strong> <strong>lofi radio</strong> plus <strong>moving desk scenery</strong>: stream stations, switch scene loops, play custom media, or hang out with <strong>Live2D BongoCat</strong> — a compact on-screen presence so <strong>sound and motion</strong> stay in view without turning into another full-size app.</p>
   <p>
     <a href="https://github.com/rhinoc/lofii/releases">Releases</a>
     &nbsp;·&nbsp;
@@ -19,8 +19,8 @@
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/readme/showcase-gif-night.jpeg" width="260" alt="Lofii GIF mode with night city background" /></td>
-    <td align="center"><img src="./assets/readme/showcase-gif-moon.jpeg" width="260" alt="Lofii GIF mode with moonlit scene and station readout" /></td>
+    <td align="center"><img src="./assets/readme/showcase-gif-night.jpeg" width="260" alt="Lofii media mode with night city background" /></td>
+    <td align="center"><img src="./assets/readme/showcase-gif-moon.jpeg" width="260" alt="Lofii media mode with moonlit scene and station readout" /></td>
     <td align="center"><img src="./assets/readme/showcase-setup.jpeg" width="260" alt="Lofii setup window with CRT tab selected" /></td>
   </tr>
 </table>
@@ -28,7 +28,7 @@
 ## Features
 
 - **Hand-picked stations** — Chillhop, SomaFM, Poolsuite; now-playing when the stream sends it.
-- **Moving wallpaper** — cinematic loops or GIF scenes; rainy nights, neon city, moonlight—swap in a click.
+- **Moving wallpaper** — Live, Scene, and Media modes; rainy nights, neon city, imported loops—swap in a click.
 - **Live2D BongoCat** — on your desk, reacting to keys and cursor.
 - **Edge-of-screen player** — hover to drive it; pin on top when you want it always there.
 
@@ -37,7 +37,7 @@
 - **macOS** 26.0 or newer.
 - **Xcode** 26.4 or a compatible Swift 6.3 toolchain.
 - **Live2D Cubism SDK for Native.** This repository does not commit Cubism Core; install it from the official SDK archive before building.
-- **Network access** on first launch for remote scene, GIF, radio, and metadata requests.
+- **Network access** on first launch for remote scenes, media, radio, and metadata requests.
 - **Release builds with automatic updates:** Sparkle signing keys and, for public distribution, Apple code-signing/notarization credentials.
 
 ## Install
@@ -56,12 +56,12 @@ Alternatively, move `lofii.app` to **Applications**, then **Control-click (or ri
 
 ## Usage
 
-**First launch** downloads the selected scene or GIF into the local cache. Scene MP4s are roughly 1-4 MB each.
+**First launch** downloads the selected scene or built-in media into the local cache. Scene MP4s are roughly 1-4 MB each.
 
 **Local cache:**
 
-- Cinematic scenes: `~/Library/Caches/Lofii/scenes/`
-- GIF assets: `~/Library/Caches/Lofii/gifs/`
+- Scenes: `~/Library/Caches/Lofii/scenes/`
+- Built-in media: `~/Library/Caches/Lofii/gifs/`
 - Imported BongoCat packs: `~/.lofii/bongo/<name>/`
 
 Custom BongoCat model import and preparation tools are documented in **[Support/README.md](./Support/README.md)**.
@@ -69,11 +69,8 @@ Custom BongoCat model import and preparation tools are documented in **[Support/
 **Keyboard shortcuts:**
 
 - `Space`: play or pause
-- `Left Arrow` / `Right Arrow`: switch scenes
-- `Command-V`: cycle day, night, rain, and night-rain variants in Cinematic mode
-- `Command-M`: switch Cinematic / GIF / BongoCat modes
-- `G`: next GIF in GIF mode
-- `Command-T`: toggle always-on-top
+- `Command-Left Arrow` / `Command-Right Arrow`: switch stations
+- `G`: next item in Media mode
 
 ## Development
 

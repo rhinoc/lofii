@@ -2,10 +2,20 @@ import SwiftUI
 import AppKit
 @preconcurrency import ImageIO
 
-// MARK: - GifSceneView
+private extension StageMetalSource {
+    var mediaURL: URL {
+        switch self {
+        case .video(let url), .gif(let url), .image(let url):
+            return url
+        }
+    }
+}
 
-struct GifSceneView: View {
-    let asset: GifAsset
+// MARK: - VisualMediaSceneView
+
+struct VisualMediaSceneView: View {
+    let asset: VisualMediaAsset
+    let reloadToken: UInt
     let isPlaying: Bool
     let curvationFactor: Double
     let curvationOverscan: Double
@@ -26,7 +36,7 @@ struct GifSceneView: View {
     /// be visible for a forced beat after a catalog switch).
     var onAnimatedGifReady: (() -> Void)? = nil
 
-    @State private var localURL: URL?
+    @State private var stageSource: StageMetalSource?
     @State private var transitionSnowURL: URL?
     @State private var transitionSnowOpacity: Double = 1
     @State private var darkFieldOpacity: Double = 0
@@ -39,7 +49,8 @@ struct GifSceneView: View {
     @State private var loadError: String?
 
     init(
-        asset: GifAsset,
+        asset: VisualMediaAsset,
+        reloadToken: UInt = 0,
         isPlaying: Bool,
         curvationFactor: Double = 0,
         curvationOverscan: Double = 1,
@@ -59,6 +70,7 @@ struct GifSceneView: View {
         onAnimatedGifReady: (() -> Void)? = nil
     ) {
         self.asset = asset
+        self.reloadToken = reloadToken
         self.isPlaying = isPlaying
         self.curvationFactor = curvationFactor
         self.curvationOverscan = curvationOverscan
@@ -76,8 +88,8 @@ struct GifSceneView: View {
         self.shatteredGlassHighlight = shatteredGlassHighlight
         self.shatteredGlassFlipX = shatteredGlassFlipX
         self.onAnimatedGifReady = onAnimatedGifReady
-        let cached = GifCache.cachedURLIfAvailable(for: asset)
-        _localURL = State(initialValue: cached)
+        let cached = asset.cachedStageMetalSourceIfAvailable()
+        _stageSource = State(initialValue: cached)
         _lastSettledAssetId = State(initialValue: nil)
         _transitionSnowURL = State(initialValue: cached == nil ? GifCache.startupSnowOverlayURL : nil)
         _startupSnowURL = State(initialValue: cached != nil ? GifCache.startupSnowOverlayURL : nil)
@@ -91,9 +103,9 @@ struct GifSceneView: View {
                 endPoint: .bottom
             )
 
-            if let localURL {
+            if let stageSource {
                 StageMetalPlayerView(
-                    source: .gif(localURL),
+                    source: stageSource,
                     isPlaying: isPlaying,
                     curvationFactor: curvationFactor,
                     curvationOverscan: curvationOverscan,
@@ -111,10 +123,10 @@ struct GifSceneView: View {
                     shatteredGlassHighlight: shatteredGlassHighlight,
                     shatteredGlassFlipX: shatteredGlassFlipX,
                     onFirstFrameReady: {
-                        markAnimatedGifFirstFrameReady(for: localURL)
+                        markVisualFirstFrameReady(for: stageSource.mediaURL)
                     }
                 )
-                    .id(localURL)
+                    .id("\(asset.id)-\(reloadToken)-\(stageSource.mediaURL.absoluteString)")
             }
 
             if let startupSnowURL {
@@ -152,17 +164,33 @@ struct GifSceneView: View {
                 .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: WidgetChromeMetrics.contentCornerRadius))
             }
         }
-        .task(id: asset.id) {
-            await loadGif()
+        .task(id: "\(asset.id)-\(reloadToken)") {
+            await loadVisualMedia()
+        }
+        .onAppear {
+            markReadyIfAlreadySettled()
         }
     }
 
     @MainActor
-    private func markAnimatedGifFirstFrameReady(for url: URL) {
+    private func markVisualFirstFrameReady(for url: URL) {
         guard firstFrameReadyURL != url else { return }
         firstFrameReadyURL = url
-        onAnimatedGifReady?()
+        notifyAnimatedGifReady()
         clearStartupSnowAfterFirstFrame()
+    }
+
+    @MainActor
+    private func markReadyIfAlreadySettled() {
+        guard stageSource != nil, lastSettledAssetId == asset.id else { return }
+        notifyAnimatedGifReady()
+    }
+
+    @MainActor
+    private func notifyAnimatedGifReady() {
+        Task { @MainActor in
+            onAnimatedGifReady?()
+        }
     }
 
     @MainActor
@@ -183,30 +211,36 @@ struct GifSceneView: View {
     }
 
     @MainActor
-    private func waitForAnimatedGifFirstFrame(url: URL) async {
-        while firstFrameReadyURL != url && !Task.isCancelled {
+    private func waitForVisualFirstFrame(url: URL) async {
+        let deadline = Date().addingTimeInterval(1.0)
+        while firstFrameReadyURL != url, Date() < deadline, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 16_000_000)
+        }
+        if firstFrameReadyURL != url, !Task.isCancelled {
+            firstFrameReadyURL = url
+            notifyAnimatedGifReady()
         }
     }
 
     @MainActor
-    private func loadGif() async {
+    private func loadVisualMedia() async {
         loadError = nil
-        let diskCached = GifCache.cachedURLIfAvailable(for: asset)
+        let cachedSource = asset.cachedStageMetalSourceIfAvailable()
 
-        if let diskCached,
-           localURL == diskCached,
+        if let cachedSource,
+           stageSource == cachedSource,
            lastSettledAssetId == asset.id {
+            notifyAnimatedGifReady()
             darkFieldOpacity = 0
             transitionSnowOpacity = 1
             transitionSnowURL = nil
             return
         }
 
-        if let diskCached,
-           localURL == diskCached,
+        if let cachedSource,
+           stageSource == cachedSource,
            lastSettledAssetId == nil {
-            await waitForAnimatedGifFirstFrame(url: diskCached)
+            await waitForVisualFirstFrame(url: cachedSource.mediaURL)
             guard !Task.isCancelled else {
                 darkFieldOpacity = 0
                 transitionSnowOpacity = 1
@@ -231,23 +265,29 @@ struct GifSceneView: View {
         }
         TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
 
-        if let diskCached {
-            localURL = diskCached
+        if let cachedSource {
+            stageSource = cachedSource
             lastSettledAssetId = asset.id
             loadError = nil
+            DiagnosticLog.appendPlayback(
+                "visualMedia.renderCached id=\"\(asset.id)\" kind=\(asset.kind.rawValue) url=\"\(cachedSource.mediaURL.path)\""
+            )
         } else {
-            localURL = nil
+            stageSource = nil
             loadError = nil
             do {
-                let url = try await GifCache.shared.ensureLocal(for: asset)
+                let source = try await asset.resolveStageMetalSource()
                 guard !Task.isCancelled else {
                     darkFieldOpacity = 0
                     transitionSnowOpacity = 1
                     transitionSnowURL = nil
                     return
                 }
-                localURL = url
+                stageSource = source
                 lastSettledAssetId = asset.id
+                DiagnosticLog.appendPlayback(
+                    "visualMedia.renderResolved id=\"\(asset.id)\" kind=\(asset.kind.rawValue) url=\"\(source.mediaURL.path)\""
+                )
             } catch {
                 guard !Task.isCancelled else {
                     darkFieldOpacity = 0
@@ -255,9 +295,12 @@ struct GifSceneView: View {
                     transitionSnowURL = nil
                     return
                 }
-                localURL = nil
-                loadError = "GIF unavailable"
-                onAnimatedGifReady?()
+                stageSource = nil
+                loadError = "Media unavailable"
+                DiagnosticLog.appendPlayback(
+                    "visualMedia.renderFailed id=\"\(asset.id)\" kind=\(asset.kind.rawValue) error=\"\(error.localizedDescription)\""
+                )
+                notifyAnimatedGifReady()
             }
         }
 
@@ -275,8 +318,8 @@ struct GifSceneView: View {
             return
         }
 
-        if let localURL {
-            await waitForAnimatedGifFirstFrame(url: localURL)
+        if let stageSource {
+            await waitForVisualFirstFrame(url: stageSource.mediaURL)
         }
         guard !Task.isCancelled else {
             darkFieldOpacity = 0

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Shared snow + dark-field timing for cinematic, GIF catalog, and GIF→video switches.
+/// Shared snow + dark-field timing for scene and media switches.
 enum TransitionSnowStyle {
     // MARK: Snow opacity
 

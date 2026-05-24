@@ -5,6 +5,33 @@ import CoreGraphics
 
 private enum KeySide { case left, right }
 
+enum BongoKeyOverlaySide: String, Sendable {
+    case left
+    case right
+}
+
+struct BongoKeyOverlay: Hashable, Sendable {
+    let side: BongoKeyOverlaySide
+    let stem: String
+
+    var id: String { "\(side.rawValue):\(stem)" }
+
+    init(side: BongoKeyOverlaySide, stem: String) {
+        self.side = side
+        self.stem = stem
+    }
+
+    init?(id: String) {
+        let parts = id.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              let side = BongoKeyOverlaySide(rawValue: String(parts[0])),
+              !parts[1].isEmpty
+        else { return nil }
+        self.side = side
+        self.stem = String(parts[1])
+    }
+}
+
 private let keySideMap: [CGKeyCode: KeySide] = {
     let leftCodes: [CGKeyCode] = [
         53,             // Escape
@@ -33,9 +60,9 @@ private let arrowKeyCodes: Set<CGKeyCode> = [123, 124, 125, 126]
 
 // MARK: - Per-stem key codes (US ANSI, macOS virtual key codes)
 
-/// Maps `left-keys/<stem>.png` stem names to hardware key codes. Only stems listed in the
-/// active pack’s `left-keys` folder participate in overlay + left-hand params; unknown
-/// stems in the folder are ignored until a mapping is added here.
+/// Maps `<stem>.png` key overlay names to hardware key codes. Only stems listed in the
+/// active pack’s key overlay folders participate in overlay + hand params; unknown
+/// stems are ignored until a mapping is added here.
 private enum BongoInputKeyBindings {
     static let stemToKeyCodes: [String: [CGKeyCode]] = [
         "Escape": [53],
@@ -71,16 +98,26 @@ private enum BongoInputKeyBindings {
 
     /// Longer stem names win when two supported images map to the same key code
     /// (e.g. `ControlLeft` vs `Control`).
-    static func keyCodeToOverlayStem(supported: Set<String>) -> [CGKeyCode: String] {
+    static func keyCodeToOverlay(supported: Set<BongoKeyOverlay>) -> [CGKeyCode: BongoKeyOverlay] {
         let sorted = supported.sorted { a, b in
-            if a.count != b.count { return a.count > b.count }
-            return a < b
+            if a.stem.count != b.stem.count { return a.stem.count > b.stem.count }
+            if a.stem != b.stem { return a.stem < b.stem }
+            return a.side.rawValue < b.side.rawValue
         }
-        var out: [CGKeyCode: String] = [:]
-        for stem in sorted {
-            guard let codes = stemToKeyCodes[stem], !codes.isEmpty else { continue }
+        var out: [CGKeyCode: BongoKeyOverlay] = [:]
+        for overlay in sorted {
+            guard let codes = stemToKeyCodes[overlay.stem], !codes.isEmpty else { continue }
             for code in codes where out[code] == nil {
-                out[code] = stem
+                out[code] = overlay
+            }
+        }
+
+        // If both folders provide the same stem, prefer the overlay folder that
+        // matches the physical half of the keyboard for that key code.
+        for overlay in sorted {
+            guard let codes = stemToKeyCodes[overlay.stem], !codes.isEmpty else { continue }
+            for code in codes where overlay.matchesPhysicalSide(of: code) {
+                out[code] = overlay
             }
         }
         return out
@@ -91,10 +128,10 @@ private enum BongoInputKeyBindings {
     /// packs (e.g. only `Space`) do not react to the entire right side of the keyboard.
     /// Packs whose only right-half keys are **arrow keys** (handled as overlays) stay `false`
     /// so models without `CatParamRightHandDown` still work.
-    static func modelUsesRightHalfTyping(supported: Set<String>) -> Bool {
+    static func modelUsesRightHalfTyping(supported: Set<BongoKeyOverlay>) -> Bool {
         let arrowOnlyCodes: Set<CGKeyCode> = [123, 124, 125, 126]
-        for stem in supported {
-            guard let codes = stemToKeyCodes[stem] else { continue }
+        for overlay in supported {
+            guard let codes = stemToKeyCodes[overlay.stem] else { continue }
             for code in codes where keySideMap[code] == .right {
                 if !arrowOnlyCodes.contains(code) {
                     return true
@@ -105,12 +142,23 @@ private enum BongoInputKeyBindings {
     }
 }
 
+private extension BongoKeyOverlay {
+    func matchesPhysicalSide(of code: CGKeyCode) -> Bool {
+        switch (side, keySideMap[code]) {
+        case (.left, .left), (.right, .right):
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - BongoInputMonitor
 
 @MainActor
 final class BongoInputMonitor {
     typealias ParamCallback = @MainActor @Sendable ([(String, Double)]) -> Void
-    typealias KeyCallback   = @MainActor @Sendable (String, Bool) -> Void  // (imageName, pressed)
+    typealias KeyCallback   = @MainActor @Sendable (String, Bool) -> Void  // (overlayID, pressed)
 
     /// `AXTrustedCheckOptionPrompt` must only run from an explicit user action.
     /// Startup and app-activation checks stay silent so a stale TCC entry does
@@ -119,7 +167,7 @@ final class BongoInputMonitor {
 
     private let paramCallback: ParamCallback
     private let keyCallback:   KeyCallback
-    private let keyCodeToOverlayStem: [CGKeyCode: String]
+    private let keyCodeToOverlay: [CGKeyCode: BongoKeyOverlay]
     private let emitsAggregateRightHandTyping: Bool
     /// Optional `resources/bongo-arrow-overlay-params.json`: overlay stem -> extra Live2D param Id.
     private let overlayAccessoryLive2DParamByStem: [String: String]
@@ -130,7 +178,7 @@ final class BongoInputMonitor {
     private var localMouseMonitor:     Any?
     private var didBecomeActiveObserver: NSObjectProtocol?
 
-    private var activeKeyImage: String?
+    private var activeKeyOverlay: BongoKeyOverlay?
     private var rightKeyHeld   = false
     private var leftMouseHeld  = false
     private var rightMouseHeld = false
@@ -138,12 +186,12 @@ final class BongoInputMonitor {
     init(
         paramCallback: @escaping ParamCallback,
         keyCallback: @escaping KeyCallback,
-        supportedKeyImages: Set<String>,
+        supportedKeyImages: Set<BongoKeyOverlay>,
         overlayAccessoryLive2DParamByStem: [String: String] = [:]
     ) {
         self.paramCallback = paramCallback
         self.keyCallback   = keyCallback
-        self.keyCodeToOverlayStem = BongoInputKeyBindings.keyCodeToOverlayStem(supported: supportedKeyImages)
+        self.keyCodeToOverlay = BongoInputKeyBindings.keyCodeToOverlay(supported: supportedKeyImages)
         self.emitsAggregateRightHandTyping = BongoInputKeyBindings.modelUsesRightHalfTyping(supported: supportedKeyImages)
         self.overlayAccessoryLive2DParamByStem = overlayAccessoryLive2DParamByStem
     }
@@ -250,7 +298,7 @@ final class BongoInputMonitor {
             resetParams.append((pid, 0.0))
         }
         emitParams(resetParams)
-        activeKeyImage = nil; rightKeyHeld = false
+        activeKeyOverlay = nil; rightKeyHeld = false
         leftMouseHeld = false; rightMouseHeld = false
     }
 
@@ -268,21 +316,29 @@ final class BongoInputMonitor {
         let code = CGKeyCode(event.keyCode)
         let pressed = event.type == .keyDown
 
-        if let imageName = keyCodeToOverlayStem[code] {
+        if let overlay = keyCodeToOverlay[code] {
             if pressed {
-                guard activeKeyImage != imageName else { return }
-                activeKeyImage = imageName
-                keyCallback(imageName, true)
-                var batch: [(String, Double)] = [("CatParamLeftHandDown", 1.0)]
-                if let accessory = overlayAccessoryLive2DParamByStem[imageName] {
+                guard activeKeyOverlay != overlay else { return }
+                if let previous = activeKeyOverlay {
+                    keyCallback(previous.id, false)
+                    var releaseBatch: [(String, Double)] = [(previous.handParameterID, 0.0)]
+                    if let accessory = overlayAccessoryLive2DParamByStem[previous.stem] {
+                        releaseBatch.append((accessory, 0.0))
+                    }
+                    emitParams(releaseBatch)
+                }
+                activeKeyOverlay = overlay
+                keyCallback(overlay.id, true)
+                var batch: [(String, Double)] = [(overlay.handParameterID, 1.0)]
+                if let accessory = overlayAccessoryLive2DParamByStem[overlay.stem] {
                     batch.append((accessory, 1.0))
                 }
                 emitParams(batch)
-            } else if activeKeyImage == imageName {
-                activeKeyImage = nil
-                keyCallback(imageName, false)
-                var batch: [(String, Double)] = [("CatParamLeftHandDown", 0.0)]
-                if let accessory = overlayAccessoryLive2DParamByStem[imageName] {
+            } else if activeKeyOverlay == overlay {
+                activeKeyOverlay = nil
+                keyCallback(overlay.id, false)
+                var batch: [(String, Double)] = [(overlay.handParameterID, 0.0)]
+                if let accessory = overlayAccessoryLive2DParamByStem[overlay.stem] {
                     batch.append((accessory, 0.0))
                 }
                 emitParams(batch)
@@ -329,5 +385,14 @@ final class BongoInputMonitor {
 
     private func emitParams(_ params: [(String, Double)]) {
         paramCallback(params)
+    }
+}
+
+private extension BongoKeyOverlay {
+    var handParameterID: String {
+        switch side {
+        case .left: return "CatParamLeftHandDown"
+        case .right: return "CatParamRightHandDown"
+        }
     }
 }

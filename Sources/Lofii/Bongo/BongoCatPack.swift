@@ -90,7 +90,7 @@ enum BongoCatPack: Equatable, Hashable, Sendable {
         }
     }
 
-    /// Directory containing `background.png` and `left-keys/` (same layout as bundled `…/resources`).
+    /// Directory containing `background.png` and key overlay folders (same layout as bundled `…/resources`).
     var resourcesDirectoryURL: URL? {
         switch self {
         case .bundled(let kind):
@@ -106,6 +106,10 @@ enum BongoCatPack: Equatable, Hashable, Sendable {
 
     var leftKeysDirectoryURL: URL? {
         resourcesDirectoryURL?.appendingPathComponent("left-keys", isDirectory: true)
+    }
+
+    var rightKeysDirectoryURL: URL? {
+        resourcesDirectoryURL?.appendingPathComponent("right-keys", isDirectory: true)
     }
 
     /// `cat.model3.json` or the first `*.model3.json` in the model root.

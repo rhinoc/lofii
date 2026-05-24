@@ -47,7 +47,11 @@ struct LofiiApp: App {
                 .background(
                     WindowConfigurator(
                         alwaysOnTop: model.alwaysOnTop,
-                        contentCornerRadius: model.widgetWindowContentCornerRadius
+                        contentCornerRadius: model.widgetWindowContentCornerRadius,
+                        darkenContentBorder: model.currentYouTubeVideoID != nil &&
+                            model.visualMode == .live &&
+                            model.crt.enabled &&
+                            model.crt.vignette
                     )
                 )
         }
@@ -59,7 +63,6 @@ struct LofiiApp: App {
                 Button("Toggle Widget") {
                     AppCommandBridge.toggleWidgetWindow()
                 }
-                .keyboardShortcut("w", modifiers: [.command])
 
                 Divider()
 
@@ -68,14 +71,14 @@ struct LofiiApp: App {
                 }
                 .keyboardShortcut(.space, modifiers: [])
 
-                Button("Previous Scene") {
+                Button("Previous Station") {
                     AppCommandBridge.previousStation()
                 }
                 // Command + arrows avoid colliding with any mode-local
                 // key handling.
                 .keyboardShortcut(.leftArrow, modifiers: [.command])
 
-                Button("Next Scene") {
+                Button("Next Station") {
                     AppCommandBridge.nextStation()
                 }
                 .keyboardShortcut(.rightArrow, modifiers: [.command])
@@ -83,17 +86,15 @@ struct LofiiApp: App {
                 Button("Cycle Variant") {
                     AppCommandBridge.cycleVariant()
                 }
-                .keyboardShortcut("v", modifiers: [.command])
 
                 Divider()
 
                 Button("Toggle Visual Mode") {
                     AppCommandBridge.toggleVisualMode()
                 }
-                .keyboardShortcut("m", modifiers: [.command])
 
-                Button("Next GIF") {
-                    AppCommandBridge.nextGif()
+                Button("Next Media") {
+                    AppCommandBridge.nextVisualMedia()
                 }
                 .keyboardShortcut("g", modifiers: [])
 
@@ -102,7 +103,6 @@ struct LofiiApp: App {
                 Button("Toggle Always on Top") {
                     AppCommandBridge.toggleAlwaysOnTop()
                 }
-                .keyboardShortcut("t", modifiers: [.command])
 
                 Divider()
 
@@ -143,11 +143,11 @@ struct LofiiApp: App {
                 model.togglePlayback()
             }
 
-            Button("Previous Scene") {
+            Button("Previous Station") {
                 model.previousStation()
             }
 
-            Button("Next Scene") {
+            Button("Next Station") {
                 model.nextStation()
             }
 
@@ -325,9 +325,9 @@ private enum AppCommandBridge {
         }
     }
 
-    static func nextGif() {
+    static func nextVisualMedia() {
         Task { @MainActor in
-            AppCommandState.model?.nextGif()
+            AppCommandState.model?.nextVisualMedia()
         }
     }
 
@@ -538,7 +538,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 private enum WidgetWindowAppearance {
     @MainActor
-    static func apply(to window: NSWindow, isFullscreen: Bool, contentCornerRadius: CGFloat? = nil) {
+    static func apply(
+        to window: NSWindow,
+        isFullscreen: Bool,
+        contentCornerRadius: CGFloat? = nil,
+        darkenContentBorder: Bool = false
+    ) {
         stripSystemChrome(from: window)
         applyStandardButtonVisibility(to: window, isFullscreen: isFullscreen)
 
@@ -566,7 +571,9 @@ private enum WidgetWindowAppearance {
         layer.cornerCurve = .continuous
         layer.masksToBounds = true
         layer.borderWidth = 1
-        layer.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        layer.borderColor = darkenContentBorder
+            ? NSColor.black.withAlphaComponent(0.70).cgColor
+            : NSColor.white.withAlphaComponent(0.10).cgColor
     }
 
     @MainActor
@@ -644,6 +651,7 @@ private enum WidgetWindowAppearance {
 private struct WindowConfigurator: NSViewRepresentable {
     let alwaysOnTop: Bool
     let contentCornerRadius: CGFloat
+    let darkenContentBorder: Bool
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -722,7 +730,12 @@ private struct WindowConfigurator: NSViewRepresentable {
         window.hasShadow = false
 
         window.level = isFullscreen ? .normal : (alwaysOnTop ? .floating : .normal)
-        WidgetWindowAppearance.apply(to: window, isFullscreen: isFullscreen, contentCornerRadius: contentCornerRadius)
+        WidgetWindowAppearance.apply(
+            to: window,
+            isFullscreen: isFullscreen,
+            contentCornerRadius: contentCornerRadius,
+            darkenContentBorder: darkenContentBorder
+        )
         // `.fullScreenPrimary` lets us call `toggleFullScreen(_:)` from our
         // green traffic-light dot. `.fullScreenAuxiliary` (the previous
         // value) explicitly disallows that and would have made the button

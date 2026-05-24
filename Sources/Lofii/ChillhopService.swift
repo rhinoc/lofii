@@ -1,6 +1,11 @@
 import Foundation
 
 struct LiveTrack: Decodable, Identifiable {
+    enum MetadataKind: String, Equatable {
+        case real
+        case fallback
+    }
+
     let id: Int
     let fileId: Int
     let artists: String
@@ -11,6 +16,11 @@ struct LiveTrack: Decodable, Identifiable {
     let startTime: Date
     let endTime: Date
     let isSynchronizedLiveStream: Bool
+    let metadataKind: MetadataKind
+
+    var hasRealMetadata: Bool {
+        metadataKind == .real
+    }
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -34,7 +44,8 @@ struct LiveTrack: Decodable, Identifiable {
         streamURL: URL,
         startTime: Date,
         endTime: Date,
-        isSynchronizedLiveStream: Bool = true
+        isSynchronizedLiveStream: Bool = true,
+        metadataKind: MetadataKind = .real
     ) {
         self.id = id
         self.fileId = fileId
@@ -46,6 +57,7 @@ struct LiveTrack: Decodable, Identifiable {
         self.startTime = startTime
         self.endTime = endTime
         self.isSynchronizedLiveStream = isSynchronizedLiveStream
+        self.metadataKind = metadataKind
     }
 
     init(from decoder: Decoder) throws {
@@ -60,6 +72,7 @@ struct LiveTrack: Decodable, Identifiable {
         startTime = try container.decode(Date.self, forKey: .startTime)
         endTime = try container.decode(Date.self, forKey: .endTime)
         isSynchronizedLiveStream = true
+        metadataKind = .real
     }
 
     func elapsedPlaybackSeconds(relativeTo now: Date = .now) -> TimeInterval {
@@ -77,19 +90,22 @@ struct LiveTrack: Decodable, Identifiable {
         title: String,
         artists: String,
         streamURL: URL,
-        now: Date = .now
+        image: URL? = nil,
+        now: Date = .now,
+        metadataKind: MetadataKind = .fallback
     ) -> LiveTrack {
         LiveTrack(
             id: id,
             fileId: id,
             artists: artists,
             title: title,
-            image: nil,
+            image: image,
             duration: 0,
             streamURL: streamURL,
             startTime: now,
             endTime: now,
-            isSynchronizedLiveStream: false
+            isSynchronizedLiveStream: false,
+            metadataKind: metadataKind
         )
     }
 }

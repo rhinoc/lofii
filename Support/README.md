@@ -31,6 +31,9 @@ JSON:
       KeyA.png
       KeyS.png
       Space.png
+    right-keys/
+      KeyJ.png
+      KeyK.png
 ```
 
 If `cat.model3.json` is not present, `lofii` uses the first sorted
@@ -50,15 +53,19 @@ resources/
   bongo-arrow-overlay-params.json
   left-keys/
     <KeyStem>.png
+  right-keys/
+    <KeyStem>.png
 ```
 
 - `resources/background.png`: used as the stage background. For imported packs,
   its pixel size also defines the model stage size; the app halves it for Retina
   parity.
-- `resources/left-keys/*.png`: overlay images shown while a matching physical
-  key is held. The file stem must match a supported key stem such as `KeyA`,
-  `KeyS`, `KeyD`, `KeyW`, `Space`, `Return`, `Tab`, `ShiftLeft`, `ArrowUp`, or
-  `UpArrow`.
+- `resources/left-keys/*.png` and `resources/right-keys/*.png`: overlay images
+  shown while a matching physical key is held. Left overlays drive
+  `CatParamLeftHandDown`; right overlays drive `CatParamRightHandDown`. The file
+  stem must match a supported key stem such as `KeyA`, `KeyS`, `KeyD`, `KeyW`,
+  `KeyJ`, `KeyK`, `Space`, `Return`, `Tab`, `ShiftLeft`, `ArrowUp`, or
+  `UpArrow`. Legacy packs that put all key images in `left-keys` still work.
 - `resources/desktop-layout.json`: controls the desktop mask cut line when the
   Bongo desktop mask is enabled.
 - `resources/bongo-parameter-map.json`: maps app-side input parameter names to

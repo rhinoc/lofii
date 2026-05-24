@@ -68,6 +68,7 @@ final class SystemMediaControls: @unchecked Sendable {
     }
 
     func update(
+        stationName: String,
         station: RadioStation,
         scene: SceneAsset,
         variant: SceneVariant,
@@ -75,8 +76,8 @@ final class SystemMediaControls: @unchecked Sendable {
         isPlaying: Bool
     ) {
         var nowPlayingInfo: [String: Any] = [
-            MPMediaItemPropertyAlbumTitle: station.displayName,
-            MPMediaItemPropertyTitle: track?.title ?? station.displayName,
+            MPMediaItemPropertyAlbumTitle: stationName,
+            MPMediaItemPropertyTitle: track?.title ?? stationName,
             MPMediaItemPropertyArtist: track?.artists ?? station.providerName,
             MPMediaItemPropertyArtwork: artwork(
                 for: track?.image,

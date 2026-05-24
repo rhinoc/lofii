@@ -62,7 +62,8 @@ struct RadioCoService {
             streamURL: streamURL,
             startTime: startTime,
             endTime: endTime,
-            isSynchronizedLiveStream: false
+            isSynchronizedLiveStream: false,
+            metadataKind: parsed.isFallback ? .fallback : .real
         )
 
         return RadioCoSnapshot(track: track, bitrate: output.bitrate)
@@ -149,6 +150,7 @@ private struct RadioCoArtworkURLs: Decodable {
 private struct ParsedTrackTitle {
     let artists: String
     let title: String
+    let isFallback: Bool
 
     init(
         rawTitle: String,
@@ -164,6 +166,7 @@ private struct ParsedTrackTitle {
            let title = trimmedTitle, !title.isEmpty {
             self.artists = artist
             self.title = title
+            self.isFallback = false
             return
         }
 
@@ -173,6 +176,7 @@ private struct ParsedTrackTitle {
         if split.count == 2, !split[0].isEmpty, !split[1].isEmpty {
             artists = split[0]
             title = split[1]
+            isFallback = false
             return
         }
 
@@ -184,6 +188,7 @@ private struct ParsedTrackTitle {
 
         artists = resolvedArtists
         title = resolvedTitle
+        isFallback = true
     }
 }
 

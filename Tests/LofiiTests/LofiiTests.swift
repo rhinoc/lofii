@@ -30,7 +30,36 @@ func directStreamsDoNotAttemptElapsedSync() async throws {
     )
 
     #expect(!stream.isSynchronizedLiveStream)
+    #expect(!stream.hasRealMetadata)
     #expect(stream.elapsedPlaybackSeconds() == 0)
+}
+
+@Test
+func directStreamCanCarryResolvedMetadata() async throws {
+    let artwork = URL(string: "https://example.com/art.jpg")!
+    let stream = LiveTrack.directStream(
+        id: -2001,
+        title: "Current Set",
+        artists: "SomaFM Live Event",
+        streamURL: URL(string: "https://ice5.somafm.com/live-128-mp3")!,
+        image: artwork,
+        metadataKind: .real
+    )
+
+    #expect(stream.hasRealMetadata)
+    #expect(stream.title == "Current Set")
+    #expect(stream.artists == "SomaFM Live Event")
+    #expect(stream.image == artwork)
+}
+
+@Test
+func icyMetadataParserExtractsStreamFields() throws {
+    let parsed = StationMetadataService.parseICYMetadataBlock(
+        "StreamTitle='Def Con 32 Live - Merin MC Sunday Closing Set';StreamUrl='https://somafm.com/logos/512/live512.jpg';"
+    )
+
+    #expect(parsed["StreamTitle"] == "Def Con 32 Live - Merin MC Sunday Closing Set")
+    #expect(parsed["StreamUrl"] == "https://somafm.com/logos/512/live512.jpg")
 }
 
 @Test
@@ -112,6 +141,291 @@ func allScenePresetsNowMapToDistinctStations() async throws {
     let stationIDs = Set(LofiiPreset.presets.map(\.radio.source.stableID))
 
     #expect(stationIDs.count == LofiiPreset.presets.count)
+}
+
+@Test
+func presetDisplayNameUsesSceneNameByDefault() throws {
+    let preset = try #require(LofiiPreset.presets.first { $0.id == "chill-vibes" })
+
+    #expect(preset.displayName == "Chill Vibes")
+}
+
+@Test
+func trackArtworkSupportIsLimitedToMetadataProviders() throws {
+    #expect(RadioSource.chillhop(stationID: 12354).supportsTrackArtwork)
+    #expect(RadioSource.radioCo(trackID: -3001, stationID: "sc9cb59935").supportsTrackArtwork)
+    #expect(!RadioSource.directStream(trackID: -2001, url: URL(string: "https://example.com/live.aac")!).supportsTrackArtwork)
+    #expect(!RadioSource.directVideo(trackID: -2002, url: URL(string: "https://example.com/live.m3u8")!).supportsTrackArtwork)
+    #expect(!RadioSource.youtube(videoID: "1wckb-eWOxw").supportsTrackArtwork)
+}
+
+@Test
+func youtubeURLParserAcceptsCommonVideoShapes() throws {
+    #expect(YouTubeURLParser.videoID(from: "https://www.youtube.com/watch?v=1wckb-eWOxw") == "1wckb-eWOxw")
+    #expect(YouTubeURLParser.videoID(from: "https://youtu.be/5yx6BWlEVcY?t=10") == "5yx6BWlEVcY")
+    #expect(YouTubeURLParser.videoID(from: "youtube.com/embed/lP26UCnoH9s") == "lP26UCnoH9s")
+    #expect(YouTubeURLParser.videoID(from: "https://www.youtube.com/live/tNkZsRW7h2c?feature=share") == "tNkZsRW7h2c")
+    #expect(YouTubeURLParser.videoID(from: "apCom1TeTiA") == "apCom1TeTiA")
+}
+
+@Test
+func youtubeURLParserRejectsNonVideoShapes() throws {
+    #expect(YouTubeURLParser.videoID(from: "https://www.youtube.com/playlist?list=PL123") == nil)
+    #expect(YouTubeURLParser.videoID(from: "https://www.youtube.com/channel/UC1234567890") == nil)
+    #expect(YouTubeURLParser.videoID(from: "https://example.com/watch?v=1wckb-eWOxw") == nil)
+    #expect(YouTubeURLParser.videoID(from: "too-short") == nil)
+}
+
+@Test
+func customStationSourceResolverDetectsYouTube() throws {
+    #expect(CustomStationSourceResolver.resolve("https://www.youtube.com/watch?v=1wckb-eWOxw") == .youtube(videoID: "1wckb-eWOxw"))
+}
+
+@Test
+func customStationSourceResolverDetectsHLSVideo() throws {
+    #expect(CustomStationSourceResolver.resolve("https://example.com/live/playlist.m3u8?token=abc") == .directVideo(url: URL(string: "https://example.com/live/playlist.m3u8?token=abc")!))
+}
+
+@Test
+func customStationSourceResolverDetectsMP4Video() throws {
+    #expect(CustomStationSourceResolver.resolve("https://cdn.example.com/lofi.mp4") == .directVideo(url: URL(string: "https://cdn.example.com/lofi.mp4")!))
+}
+
+@Test
+func customStationSourceResolverDetectsAudioURLs() throws {
+    #expect(CustomStationSourceResolver.resolve("https://cdn.example.com/live.mp3") == .directAudio(url: URL(string: "https://cdn.example.com/live.mp3")!))
+    #expect(CustomStationSourceResolver.resolve("https://cdn.example.com/live.aac") == .directAudio(url: URL(string: "https://cdn.example.com/live.aac")!))
+}
+
+@Test
+func customStationSourceResolverDetectsRadioStyleAudioSuffixes() throws {
+    #expect(CustomStationSourceResolver.resolve("https://ice5.somafm.com/live-128-mp3") == .directAudio(url: URL(string: "https://ice5.somafm.com/live-128-mp3")!))
+    #expect(CustomStationSourceResolver.resolve("https://ice5.somafm.com/live-128-aac") == .directAudio(url: URL(string: "https://ice5.somafm.com/live-128-aac")!))
+    #expect(CustomStationSourceResolver.resolve("https://wrti-live.streamguys1.com/classical-mp3") == .directAudio(url: URL(string: "https://wrti-live.streamguys1.com/classical-mp3")!))
+}
+
+@Test
+func customStationSourceResolverDetectsContentTypes() throws {
+    let url = URL(string: "https://stream.example.com/live")!
+    #expect(CustomStationSourceResolver.resolve(url: url, contentType: "audio/mpeg") == .directAudio(url: url))
+    #expect(CustomStationSourceResolver.resolve(url: url, contentType: "audio/aacp; charset=utf-8") == .directAudio(url: url))
+    #expect(CustomStationSourceResolver.resolve(url: url, contentType: "video/mp4") == .directVideo(url: url))
+    #expect(CustomStationSourceResolver.resolve(url: url, contentType: "application/vnd.apple.mpegurl") == .directVideo(url: url))
+}
+
+@Test
+func customStationSourceResolverRejectsInvalidURLs() throws {
+    #expect(CustomStationSourceResolver.resolve("https://example.com/live.txt") == nil)
+    #expect(CustomStationSourceResolver.resolve("example.com/live.mp3") == nil)
+    #expect(CustomStationSourceResolver.resolve("not a station") == nil)
+}
+
+@Test
+func customStationStoreRoundTripsVersionedJSON() throws {
+    let container = try makeTemporaryBundleContainer()
+    defer { try? FileManager.default.removeItem(at: container) }
+
+    let fileURL = container.appendingPathComponent("custom-stations.json")
+    let store = CustomStationStore(fileURL: fileURL)
+    let station = CustomStation(
+        id: UUID(uuidString: "F0E9B75B-7F84-4F4C-9FA0-2C69D0DE7B71")!,
+        name: "Study Stream",
+        url: "https://www.youtube.com/watch?v=1wckb-eWOxw",
+        videoID: "1wckb-eWOxw",
+        iconID: PixelGlyph.headphone.stableID,
+        themeColorHex: StationThemeColor.cyan.hex,
+        createdAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 200)
+    )
+    let builtInOverride = BuiltInStationOverride(
+        presetID: "sea-side",
+        name: "Wave Stream",
+        url: "https://www.youtube.com/watch?v=5yx6BWlEVcY",
+        videoID: "5yx6BWlEVcY",
+        iconID: PixelGlyph.star.stableID,
+        themeColorHex: StationThemeColor.violet.hex,
+        updatedAt: Date(timeIntervalSince1970: 300)
+    )
+
+    try store.save(CustomStationDocument(stations: [station], builtInOverrides: [builtInOverride]))
+
+    let document = store.loadDocument()
+    #expect(document.schemaVersion == CustomStationDocument.currentSchemaVersion)
+    #expect(document.stations == [station])
+    #expect(document.builtInOverrides == [builtInOverride])
+}
+
+@Test
+func customStationStoreRejectsNonCurrentSchemaJSON() throws {
+    let container = try makeTemporaryBundleContainer()
+    defer { try? FileManager.default.removeItem(at: container) }
+
+    let fileURL = container.appendingPathComponent("custom-stations.json")
+    let store = CustomStationStore(fileURL: fileURL)
+    let json = """
+    {
+      "schemaVersion": 2,
+      "stations": [
+        {
+          "createdAt": "1970-01-01T00:01:40Z",
+          "iconID": "headphone",
+          "id": "F0E9B75B-7F84-4F4C-9FA0-2C69D0DE7B71",
+          "kind": "youtube",
+          "name": "Study Stream",
+          "updatedAt": "1970-01-01T00:03:20Z",
+          "url": "https://www.youtube.com/watch?v=1wckb-eWOxw",
+          "videoID": "1wckb-eWOxw"
+        }
+      ],
+      "builtInOverrides": []
+    }
+    """
+    try #require(json.data(using: .utf8)).write(to: fileURL)
+
+    let document = store.loadDocument()
+    #expect(document.schemaVersion == CustomStationDocument.currentSchemaVersion)
+    #expect(document.stations.isEmpty)
+    #expect(document.builtInOverrides.isEmpty)
+}
+
+@Test
+func customYouTubePresetUsesStableCustomIdentityAndSource() throws {
+    let id = UUID(uuidString: "F0E9B75B-7F84-4F4C-9FA0-2C69D0DE7B71")!
+    let station = CustomStation(
+        id: id,
+        name: "Study Stream",
+        url: "https://www.youtube.com/watch?v=1wckb-eWOxw",
+        videoID: "1wckb-eWOxw",
+        iconID: PixelGlyph.leaf.stableID,
+        themeColorHex: StationThemeColor.mint.hex
+    )
+
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+
+    #expect(preset.id == "custom-youtube-\(id.uuidString)")
+    #expect(preset.customStationID == id)
+    #expect(preset.displayName == "Study Stream")
+    #expect(preset.pickerGlyph == .leaf)
+    #expect(preset.pickerAccent.hexRGB == StationThemeColor.mint.hex)
+    #expect(preset.radio.source.stableID == "youtube:1wckb-eWOxw")
+    #expect(preset.radio.source.youtubeVideoID == "1wckb-eWOxw")
+}
+
+@Test
+func customDirectAudioPresetUsesDirectStreamSource() throws {
+    let id = UUID(uuidString: "F0E9B75B-7F84-4F4C-9FA0-2C69D0DE7B71")!
+    let url = URL(string: "https://cdn.example.com/live.mp3")!
+    let station = CustomStation(
+        id: id,
+        kind: .directAudio,
+        name: "Study Stream",
+        url: url.absoluteString,
+        videoID: "",
+        iconID: PixelGlyph.leaf.stableID,
+        themeColorHex: StationThemeColor.mint.hex
+    )
+
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+
+    #expect(preset.id == "custom-directAudio-\(id.uuidString)")
+    #expect(preset.customStationID == id)
+    #expect(preset.radio.providerName == "Direct Audio")
+    guard case let .directStream(_, streamURL) = preset.radio.source else {
+        Issue.record("Expected direct stream source")
+        return
+    }
+    #expect(streamURL == url)
+}
+
+@Test
+func savedDirectAudioStationDoesNotRequireExtensionOnReload() throws {
+    let id = UUID(uuidString: "F0E9B75B-7F84-4F4C-9FA0-2C69D0DE7B71")!
+    let url = URL(string: "https://ice5.somafm.com/live-128-mp3")!
+    let station = CustomStation(
+        id: id,
+        kind: .directAudio,
+        name: "SomaFM Live",
+        url: url.absoluteString,
+        videoID: "",
+        iconID: PixelGlyph.leaf.stableID,
+        themeColorHex: StationThemeColor.mint.hex
+    )
+
+    #expect(CustomStationSourceResolver.resolve(station: station) == .directAudio(url: url))
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+    guard case let .directStream(_, streamURL) = preset.radio.source else {
+        Issue.record("Expected direct stream source")
+        return
+    }
+    #expect(streamURL == url)
+}
+
+@Test
+func customDirectVideoPresetUsesDirectVideoSource() throws {
+    let id = UUID(uuidString: "5E8A5649-14C0-48F0-B7CE-F5E8EC2D975D")!
+    let url = URL(string: "https://cdn.example.com/live.m3u8")!
+    let station = CustomStation(
+        id: id,
+        kind: .directVideo,
+        name: "Study Stream",
+        url: url.absoluteString,
+        videoID: "",
+        iconID: PixelGlyph.leaf.stableID,
+        themeColorHex: StationThemeColor.mint.hex
+    )
+
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+
+    #expect(preset.id == "custom-directVideo-\(id.uuidString)")
+    #expect(preset.customStationID == id)
+    #expect(preset.radio.providerName == "Direct Video")
+    #expect(preset.radio.source.directVideoURL == url)
+    guard case let .directVideo(_, streamURL) = preset.radio.source else {
+        Issue.record("Expected direct video source")
+        return
+    }
+    #expect(streamURL == url)
+}
+
+@Test
+func builtInStationOverrideKeepsPresetSlotAndAppliesYoutubeSource() throws {
+    let original = try #require(LofiiPreset.presets.first { $0.id == "sea-side" })
+    let override = BuiltInStationOverride(
+        presetID: original.id,
+        name: "Wave Stream",
+        url: "https://www.youtube.com/watch?v=5yx6BWlEVcY",
+        videoID: "5yx6BWlEVcY",
+        iconID: PixelGlyph.star.stableID,
+        themeColorHex: StationThemeColor.violet.hex
+    )
+
+    let preset = override.apply(to: original)
+
+    #expect(preset.id == original.id)
+    #expect(preset.customStationID == nil)
+    #expect(preset.builtInOverrideID == original.id)
+    #expect(preset.displayName == "Wave Stream")
+    #expect(preset.pickerGlyph == .star)
+    #expect(preset.pickerAccent.hexRGB == StationThemeColor.violet.hex)
+    #expect(preset.radio.source.stableID == "youtube:5yx6BWlEVcY")
+    #expect(preset.radio.source.youtubeVideoID == "5yx6BWlEVcY")
+}
+
+@Test
+func builtInStationOverrideCanKeepOriginalIcon() throws {
+    let original = try #require(LofiiPreset.presets.first { $0.id == "sea-side" })
+    let override = BuiltInStationOverride(
+        presetID: original.id,
+        name: "Wave Stream",
+        url: "https://www.youtube.com/watch?v=5yx6BWlEVcY",
+        videoID: "5yx6BWlEVcY",
+        iconID: original.pickerGlyph.stableID,
+        themeColorHex: StationThemeColor.violet.hex
+    )
+
+    let preset = override.apply(to: original)
+
+    #expect(preset.pickerGlyph == original.pickerGlyph)
 }
 
 @Test
@@ -221,6 +535,36 @@ func lofiiResourcesFindSwiftPMBundleWithoutCallingBundleModule() throws {
     let resolved = LofiiResources.resolveBundle(main: main)
 
     #expect(resolved.bundleURL.standardizedFileURL == swiftPM.bundleURL.standardizedFileURL)
+}
+
+@Test
+func userVisualMediaLibraryScansSupportedFlatFilesOnly() throws {
+    let container = try makeTemporaryBundleContainer()
+    defer { try? FileManager.default.removeItem(at: container) }
+
+    try Data().write(to: container.appendingPathComponent("z-loop.mp4"))
+    try Data().write(to: container.appendingPathComponent("a-scene.mov"))
+    try Data().write(to: container.appendingPathComponent("notes.txt"))
+    try Data().write(to: container.appendingPathComponent(".hidden.mp4"))
+    try FileManager.default.createDirectory(
+        at: container.appendingPathComponent("folder.gif", isDirectory: true),
+        withIntermediateDirectories: true
+    )
+    try FileManager.default.createSymbolicLink(
+        at: container.appendingPathComponent("linked.mp4"),
+        withDestinationURL: container.appendingPathComponent("z-loop.mp4")
+    )
+
+    let media = UserVisualMediaLibrary.listImportedMedia(in: container)
+
+    #expect(media.map(\.displayName) == ["a-scene", "z-loop"])
+    #expect(media.map(\.kind) == [.userVideo, .userVideo])
+}
+
+@Test
+func stationEditorPaletteMatchesIconChoices() {
+    #expect(StationThemeColor.allCases.count == PixelGlyph.customStationIconChoices.count)
+    #expect(Set(StationThemeColor.allCases.map(\.hex)).count == StationThemeColor.allCases.count)
 }
 
 private func makeTemporaryBundleContainer() throws -> URL {

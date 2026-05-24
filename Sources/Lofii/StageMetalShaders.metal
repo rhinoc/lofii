@@ -114,11 +114,24 @@ static float2 aspectFillUV(float2 viewportUV, float2 viewportSize, float2 source
     return clamp(sourcePx / sourceSize, 0.0, 1.0);
 }
 
+static float2 aspectFillDrawnSize(float2 viewportSize, float2 sourceSize)
+{
+    const float scale = max(viewportSize.x / sourceSize.x, viewportSize.y / sourceSize.y);
+    return max(sourceSize * scale, float2(1.0));
+}
+
 static float2 aspectFillSourceUV(float2 viewportUV, constant StageUniforms& uniforms)
 {
     const float2 viewportSize = max(uniforms.viewportSize, float2(1.0));
     const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
     return aspectFillUV(viewportUV, viewportSize, sourceSize);
+}
+
+static float2 aspectFillDrawnSizeForUniforms(constant StageUniforms& uniforms)
+{
+    const float2 viewportSize = max(uniforms.viewportSize, float2(1.0));
+    const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
+    return aspectFillDrawnSize(viewportSize, sourceSize);
 }
 
 static half4 sampleSource(
@@ -139,8 +152,8 @@ static half4 sampleSourceWithMotionBlur(
         return sampleSource(sourceTexture, sourceSampler, sourceUV);
     }
 
-    const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
-    const float2 blurStep = float2(9.0, 3.0) * uniforms.motionBlurStrength / sourceSize;
+    const float2 drawnSize = aspectFillDrawnSizeForUniforms(uniforms);
+    const float2 blurStep = float2(9.0, 3.0) * uniforms.motionBlurStrength / drawnSize;
     half4 color = sampleSource(sourceTexture, sourceSampler, sourceUV) * half(0.38);
     color += sampleSource(sourceTexture, sourceSampler, sourceUV - blurStep) * half(0.22);
     color += sampleSource(sourceTexture, sourceSampler, sourceUV + blurStep) * half(0.22);
@@ -195,20 +208,21 @@ static half4 applyNTSCChromaticAberration(
     }
 
     const float2 sourceSize = max(uniforms.sourceSize, float2(1.0));
-    const float2 texelX = float2(1.0 / sourceSize.x, 0.0);
+    const float2 drawnSize = aspectFillDrawnSizeForUniforms(uniforms);
+    const float2 displayPixelX = float2(1.0 / drawnSize.x, 0.0);
     const float3 artifact = ntscArtifact(sourceUV * sourceSize);
-    const float edgeFade = smoothstep(0.0, 2.5 / sourceSize.x, min(sourceUV.x, 1.0 - sourceUV.x));
+    const float edgeFade = smoothstep(0.0, 2.5 / drawnSize.x, min(sourceUV.x, 1.0 - sourceUV.x));
 
     const float3 baseRGB = float3(baseColor.rgb);
-    const float3 leftRGB = float3(sampleSource(sourceTexture, sourceSampler, sourceUV - texelX).rgb);
-    const float3 rightRGB = float3(sampleSource(sourceTexture, sourceSampler, sourceUV + texelX).rgb);
+    const float3 leftRGB = float3(sampleSource(sourceTexture, sourceSampler, sourceUV - displayPixelX).rgb);
+    const float3 rightRGB = float3(sampleSource(sourceTexture, sourceSampler, sourceUV + displayPixelX).rgb);
     float3 rgb = baseRGB + ((leftRGB - baseRGB) + (rightRGB - baseRGB)) * artifact * (0.42 * amount * edgeFade);
 
     float overshoot = 0.0;
     const float sharpWeights[3] = { 1.0, -0.3162277, 0.1 };
     const float localLuma = sourceLuma(baseRGB);
     for (uint i = 0; i < 3; ++i) {
-        const float2 step = texelX * float(i + 1);
+        const float2 step = displayPixelX * float(i + 1);
         const float3 tapL = float3(sampleSource(sourceTexture, sourceSampler, sourceUV - step).rgb);
         const float3 tapR = float3(sampleSource(sourceTexture, sourceSampler, sourceUV + step).rgb);
         overshoot += ((localLuma - sourceLuma(tapL)) + (localLuma - sourceLuma(tapR))) * sharpWeights[i];
@@ -216,7 +230,7 @@ static half4 applyNTSCChromaticAberration(
     rgb += overshoot * mix(float3(1.0), artifact, clamp(amount, 0.0, 1.0)) * (0.10 * amount * edgeFade);
 
     const float splitPixels = 0.85 + 2.25 * amount;
-    const float2 splitStep = texelX * splitPixels;
+    const float2 splitStep = displayPixelX * splitPixels;
     const float3 splitRGB = float3(
         sampleSource(sourceTexture, sourceSampler, sourceUV + splitStep).r,
         baseColor.g,
@@ -228,7 +242,7 @@ static half4 applyNTSCChromaticAberration(
     const float radius = length(centered);
     const float radialWeight = smoothstep(0.08, 0.66, radius);
     const float2 radialDir = normalize(centered + float2(0.0001, 0.0));
-    const float2 radialStep = radialDir * ((1.2 + 3.4 * amount) * radialWeight) / sourceSize;
+    const float2 radialStep = radialDir * ((1.2 + 3.4 * amount) * radialWeight) / drawnSize;
     const float3 radialRGB = float3(
         sampleSource(sourceTexture, sourceSampler, sourceUV + radialStep).r,
         rgb.g,
@@ -431,8 +445,10 @@ fragment half4 bongoDesktopMaskFragment(
 ) {
     const float y = in.uv.y * max(uniforms.viewportSize.y, 1.0);
     const float lineY = mix(uniforms.leftY, uniforms.rightY, clamp(in.uv.x, 0.0, 1.0));
-    if (y < lineY) {
-        return half4(0.0, 0.0, 0.0, 0.0);
-    }
-    return half4(uniforms.color);
+    const float signedDistance = y - lineY;
+    const bool fullCoverageMask = uniforms.leftY <= 0.0 && uniforms.rightY <= 0.0;
+    const float edgeWidth = max(fwidth(signedDistance), 1.0);
+    const float coverage = fullCoverageMask ? 1.0 : smoothstep(-edgeWidth, edgeWidth, signedDistance);
+    const float alpha = uniforms.color.a * coverage;
+    return half4(half3(uniforms.color.rgb * alpha), half(alpha));
 }

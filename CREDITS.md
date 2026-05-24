@@ -92,8 +92,8 @@ SOFTWARE.
 ## Radio and Music Streams
 
 - [Chillhop](https://chillhop.com) live radio and live track metadata.
-- [SomaFM](https://somafm.com) stations used by presets:
-  Groove Salad, Beat Blender, Fluid, and Drone Zone.
+- [SomaFM](https://somafm.com) station used by presets:
+  Fluid.
 - [Poolsuite](https://poolsuite.net) / Poolsuite FM station stream.
 - [Radio.co](https://radio.co) public station APIs and stream infrastructure
   used to resolve the Poolsuite FM stream.

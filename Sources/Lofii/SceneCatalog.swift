@@ -101,7 +101,7 @@ enum SceneCatalog {
         ),
         SceneAsset(
             id: "cozy-studio",
-            displayName: "Cozy Studio",
+            displayName: "Cosy Studio",
             glyph: .lightbulb,
             palette: ScenePalette(
                 accent: Color(red: 1.00, green: 0.76, blue: 0.41),
@@ -134,7 +134,7 @@ enum SceneCatalog {
         ),
         SceneAsset(
             id: "sea-side",
-            displayName: "Sea Side",
+            displayName: "Seaside",
             glyph: .wind,
             palette: ScenePalette(
                 accent: Color(red: 0.45, green: 0.86, blue: 1.00),
