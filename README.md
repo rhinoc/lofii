@@ -20,12 +20,12 @@
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/showcase-bongocat.jpeg" width="380" alt="Lofii with Live2D BongoCat companion on desktop" /></td>
-    <td align="center"><img src="./assets/showcase-settings.png" width="380" alt="Lofii settings window with CRT and visual effect controls" /></td>
+    <td align="center"><img src="./assets/readme/showcase-bongocat.jpeg" width="380" alt="Lofii with Live2D BongoCat companion on desktop" /></td>
+    <td align="center"><img src="./assets/readme/showcase-settings.png" width="380" alt="Lofii settings window with CRT and visual effect controls" /></td>
   </tr>
   <tr>
-    <td align="center"><img src="./assets/showcase-station.jpeg" width="380" alt="Lofii station picker showing available radio stations" /></td>
-    <td align="center"><img src="./assets/showcase-lofigirl.png" width="380" alt="Lofii ambient scene mode with lofi girl visual" /></td>
+    <td align="center"><img src="./assets/readme/showcase-station.jpeg" width="380" alt="Lofii station picker showing available radio stations" /></td>
+    <td align="center"><img src="./assets/readme/showcase-lofigirl.png" width="380" alt="Lofii ambient scene mode with lofi girl visual" /></td>
   </tr>
 </table>
 
