@@ -11,6 +11,14 @@ Requirements:
 - Git
 - Live2D Cubism SDK for Native. The install script downloads the official SDK archive by default.
 
+The repo is a Swift Package. `Package.swift` declares an `executableTarget`
+named `lofii` that compiles into the same kind of `.app` distributed from
+GitHub Releases. SPM is how the source is organized; it is not a separate
+product format for users.
+
+Stack: SwiftUI / AppKit for the app shell, AVFoundation for audio, Metal for
+scenes and effects, Sparkle for updates, and Live2D Cubism Native for BongoCat.
+
 Clone and verify the project:
 
 ```bash
@@ -25,6 +33,15 @@ Run the app:
 
 ```bash
 swift run lofii
+```
+
+You can also open `Package.swift` in Xcode and run the `lofii` executable
+target.
+
+Create a local release DMG:
+
+```bash
+scripts/build_release.sh
 ```
 
 ## Pull Requests
@@ -60,7 +77,7 @@ BongoCat model import layout and support tools are documented in
 
 ## Release and Signing
 
-Do not commit release zips, `.app` bundles, notarization logs, certificates, private keys, passwords, or local Sparkle signing exports.
+Do not commit release DMGs, `.app` bundles, notarization logs, certificates, private keys, passwords, or local Sparkle signing exports.
 
 Release automation lives in:
 
@@ -75,6 +92,10 @@ Release automation lives in:
 Changes to these files should explain how local builds, GitHub Releases, Sparkle appcast entries, signing, and notarization are affected.
 
 CI uses the default official Cubism SDK for Native download URL. `CUBISM_NATIVE_SDK_URL` can be set as a repository variable to override the URL, and `CUBISM_NATIVE_SDK_SHA256` can be set as a repository variable to pin the archive checksum.
+
+Release builds with automatic updates require Sparkle signing keys. Public
+distribution should also use Apple code signing and notarization credentials so
+the shipped app has a stable macOS identity.
 
 ## Security Reports
 

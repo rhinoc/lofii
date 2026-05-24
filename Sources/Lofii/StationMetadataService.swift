@@ -21,6 +21,25 @@ struct StationMetadataSnapshot: Equatable, Sendable {
 }
 
 enum StationMetadataService {
+    private struct BilibiliLiveInfoResponse: Decodable {
+        struct DataPayload: Decodable {
+            let title: String
+            let userCover: URL?
+            let cover: URL?
+            let keyframe: URL?
+
+            private enum CodingKeys: String, CodingKey {
+                case title
+                case userCover = "user_cover"
+                case cover
+                case keyframe
+            }
+        }
+
+        let code: Int
+        let data: DataPayload?
+    }
+
     private struct YouTubeOEmbedResponse: Decodable {
         let title: String
         let authorName: String
@@ -30,6 +49,46 @@ enum StationMetadataService {
             case title
             case authorName = "author_name"
             case thumbnailURL = "thumbnail_url"
+        }
+    }
+
+    static func fetchBilibiliLive(roomID: Int) async -> StationMetadataSnapshot? {
+        guard let url = URL(string: "https://api.live.bilibili.com/room/v1/Room/get_info?room_id=\(roomID)") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 6
+        request.setValue("Lofii/1.0", forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode)
+            else { return nil }
+            return bilibiliLiveMetadata(from: data)
+        } catch {
+            return nil
+        }
+    }
+
+    static func bilibiliLiveMetadata(from data: Data) -> StationMetadataSnapshot? {
+        do {
+            let decoded = try JSONDecoder().decode(BilibiliLiveInfoResponse.self, from: data)
+            guard decoded.code == 0,
+                  let payload = decoded.data
+            else { return nil }
+            let title = payload.title
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return StationMetadataSnapshot(
+                title: title,
+                artists: "Bilibili",
+                image: payload.userCover ?? payload.cover ?? payload.keyframe
+            )
+        } catch {
+            return nil
         }
     }
 
@@ -53,14 +112,33 @@ enum StationMetadataService {
                   (200..<300).contains(http.statusCode)
             else { return nil }
             let decoded = try JSONDecoder().decode(YouTubeOEmbedResponse.self, from: data)
+            let title = sanitizeYouTubeReadoutText(decoded.title)
+            guard !title.isEmpty else { return nil }
+            let artists = sanitizeYouTubeReadoutText(decoded.authorName)
             return StationMetadataSnapshot(
-                title: decoded.title,
-                artists: decoded.authorName,
+                title: title,
+                artists: artists.isEmpty ? "YouTube" : artists,
                 image: decoded.thumbnailURL
             )
         } catch {
             return nil
         }
+    }
+
+    static func sanitizeYouTubeReadoutText(_ value: String) -> String {
+        let withoutEmoji = value.filter { character in
+            !character.unicodeScalars.contains { scalar in
+                let properties = scalar.properties
+                return properties.isEmojiPresentation ||
+                    properties.isEmojiModifier ||
+                    properties.isEmojiModifierBase ||
+                    scalar.value == 0xFE0F ||
+                    scalar.value == 0x200D
+            }
+        }
+        return String(withoutEmoji)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func fetchICY(url: URL) async -> StationMetadataSnapshot? {

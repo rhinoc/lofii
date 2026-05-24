@@ -10,17 +10,16 @@ public releases.
 - Bongo interaction design and behavior references:
   [ayangweb/BongoCat](https://github.com/ayangweb/BongoCat). The renderer in
   this project is a native Metal implementation.
-- Bundled standard BongoCat model and keyboard assets:
-  [ayangweb/BongoCat](https://github.com/ayangweb/BongoCat), originally listed
-  as "经典小键盘 · 标准模式" by
-  [@MMmmmoko](https://space.bilibili.com/5808772).
-- Additional bundled BongoCat-compatible model packs are sourced from the
-  [ayangweb/Awesome-BongoCat](https://github.com/ayangweb/Awesome-BongoCat)
-  index. Notable bundled packs:
-  - "温迪 · 标准模式" by
-    [@狐言 0v0](https://www.bilibili.com/video/BV1Dd4y1u7FR)
-  - "邦布 · 标准模式" by
-    [@4014OvO](https://www.bilibili.com/video/BV1F1421t7HQ)
+- Bundled **standard** BongoCat model and keyboard assets shipped with Lofii are
+  **modified derivatives**, not a direct copy of upstream packs. They trace to the
+  [ayangweb/BongoCat](https://github.com/ayangweb/BongoCat) ecosystem and the
+  lineage of "经典小键盘 · 标准模式" by
+  [@MMmmmoko](https://space.bilibili.com/5808772), and also reference
+  [Bongo Cat Asset Kit (Tapling & FocusCat)](https://www.figma.com/community/file/1632645156337158294)
+  on Figma Community (CC BY 4.0). Textures, layout, and related resources in
+  `Sources/Lofii/Resources/BongoCat/standard/` were reworked for this app.
+  User-imported packs under `~/.lofii/bongo/` are separate and remain the
+  user's responsibility.
 
 ### BongoCat MIT Notice
 
@@ -103,6 +102,10 @@ SOFTWARE.
 - [Doto](https://fonts.google.com/specimen/Doto) by Óliver Lalan, licensed
   under the SIL Open Font License 1.1. The bundled license text is in
   `Sources/Lofii/Resources/Fonts/Doto-OFL.txt`.
+- [BoutiqueBitmap9x9 Square Dot](https://github.com/scott0107000/BoutiqueBitmap9x9/tree/main/FUN)
+  by Cen-cyun Liu / Luke Liu, licensed under the SIL Open Font License 1.1.
+  The bundled license text is in
+  `Sources/Lofii/Resources/Fonts/BoutiqueBitmap9x9-OFL.txt`.
 - [Pixelarticons](https://github.com/halfmage/pixelarticons) by Gerrit
   Halfmann, licensed under MIT. The bundled license text is in
   `Sources/Lofii/Resources/Fonts/PixelartIcons-LICENSE.txt`.

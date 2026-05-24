@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Release build: lofii.app zip for Sparkle + GitHub Releases (Live2D dylib in Frameworks).
+# Release build: lofii.app DMG for Sparkle + GitHub Releases (Live2D dylib in Frameworks).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -14,6 +14,10 @@ PLIST_SRC="$ROOT/Sources/Lofii/Info.plist"
 ICON_SRC="$ROOT/Sources/Lofii/Resources/AppIcon.icns"
 LOFII_RES="$ROOT/Sources/Lofii/Resources"
 METAL_SRC="$ROOT/Sources/Lofii/StageMetalShaders.metal"
+DMG_BACKGROUND="$ROOT/assets/dmg-background.png"
+DMG_DS_STORE="$ROOT/assets/dmg.DS_Store"
+DMG_APPLICATIONS_ALIAS="$ROOT/assets/Applications.alias"
+DMG_APPLICATIONS_ICON="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ApplicationsFolderIcon.icns"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -25,6 +29,22 @@ cp "$BIN" "$APP/Contents/MacOS/lofii"
 cp "$DYLIB_SRC" "$APP/Contents/Frameworks/libLive2DCubismCore.dylib"
 if [[ ! -d "$SPARKLE_FW" ]]; then
   echo "error: Sparkle.framework not found next to release binary (expected: $SPARKLE_FW)" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_BACKGROUND" ]]; then
+  echo "error: missing DMG background at $DMG_BACKGROUND" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_DS_STORE" ]]; then
+  echo "error: missing DMG Finder layout at $DMG_DS_STORE" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_APPLICATIONS_ALIAS" ]]; then
+  echo "error: missing DMG Applications alias at $DMG_APPLICATIONS_ALIAS" >&2
+  exit 1
+fi
+if [[ ! -f "$DMG_APPLICATIONS_ICON" ]]; then
+  echo "error: missing macOS Applications folder icon at $DMG_APPLICATIONS_ICON" >&2
   exit 1
 fi
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
@@ -45,17 +65,41 @@ install_name_tool -change @rpath/libLive2DCubismCore.dylib \
 # SPM links Sparkle as @rpath/Sparkle.framework/...; ship the framework and resolve rpath at runtime.
 install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/lofii"
 
-# Strip AppleDouble / xattrs so the zip does not ship ._ sidecar files.
+# Strip AppleDouble / xattrs so the DMG does not ship ._ sidecar files.
 find "$APP" -name '._*' -delete
 xattr -cr "$APP"
 
-# Match liltr: real signing when CI keychain has a cert; else ad-hoc.
+# Sign the assembled app before wrapping it in the DMG.
 "$ROOT/scripts/sign_built_app.sh" "$APP"
 
 mkdir -p "$ROOT/dist"
-ZIP="$ROOT/dist/lofii-${VERSION}-macos.zip"
-rm -f "$ZIP"
-# `zip` keeps the archive clean; `ditto -c -k` often injects AppleDouble `._*` files.
-( cd "$STAGE" && /usr/bin/zip -q -r "$ZIP" lofii.app )
+DMG_ROOT="$STAGE/dmg-root"
+mkdir -p "$DMG_ROOT/.background"
+cp -R "$APP" "$DMG_ROOT/"
+cp "$DMG_BACKGROUND" "$DMG_ROOT/.background/background.png"
+cp "$DMG_DS_STORE" "$DMG_ROOT/.DS_Store"
+cp "$DMG_APPLICATIONS_ALIAS" "$DMG_ROOT/Applications"
+APPLICATIONS_ICON_COPY="$STAGE/ApplicationsFolderIcon.icns"
+APPLICATIONS_ICON_RSRC="$STAGE/ApplicationsFolderIcon.rsrc"
+cp "$DMG_APPLICATIONS_ICON" "$APPLICATIONS_ICON_COPY"
+sips -i "$APPLICATIONS_ICON_COPY" >/dev/null
+DeRez -only icns "$APPLICATIONS_ICON_COPY" >"$APPLICATIONS_ICON_RSRC"
+Rez -append "$APPLICATIONS_ICON_RSRC" -o "$DMG_ROOT/Applications"
+SetFile -a C "$DMG_ROOT/Applications"
+find "$DMG_ROOT" -name '._*' -delete
+xattr -cr "$DMG_ROOT/lofii.app"
+chflags hidden "$DMG_ROOT/.background"
 
-echo "Built $ZIP"
+VOLNAME="lofii"
+DMG="$ROOT/dist/lofii-${VERSION}-macos.dmg"
+rm -f "$DMG"
+hdiutil create \
+  -volname "$VOLNAME" \
+  -srcfolder "$DMG_ROOT" \
+  -ov \
+  -fs HFS+ \
+  -format UDZO \
+  -imagekey zlib-level=9 \
+  "$DMG" >/dev/null
+
+echo "Built $DMG"

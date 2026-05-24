@@ -79,10 +79,12 @@ struct LofiiPreset: Identifiable {
 }
 
 enum RadioSource: Equatable {
+    case bilibiliLive(roomID: Int)
     case chillhop(stationID: Int)
     case directStream(trackID: Int, url: URL)
     case directVideo(trackID: Int, url: URL)
     case radioCo(trackID: Int, stationID: String)
+    case twitch(channelName: String)
     case youtube(videoID: String)
 
     var isChillhop: Bool {
@@ -106,13 +108,38 @@ enum RadioSource: Equatable {
         return false
     }
 
+    var isBilibiliLive: Bool {
+        if case .bilibiliLive = self {
+            return true
+        }
+        return false
+    }
+
+    var isTwitch: Bool {
+        if case .twitch = self {
+            return true
+        }
+        return false
+    }
+
+    var isEmbeddedVideo: Bool {
+        isYouTube || isTwitch || isBilibiliLive
+    }
+
     var supportsTrackArtwork: Bool {
         switch self {
-        case .chillhop, .radioCo:
+        case .chillhop, .radioCo, .twitch:
             return true
-        case .directStream, .directVideo, .youtube:
+        case .bilibiliLive, .directStream, .directVideo, .youtube:
             return false
         }
+    }
+
+    var bilibiliLiveRoomID: Int? {
+        if case let .bilibiliLive(roomID) = self {
+            return roomID
+        }
+        return nil
     }
 
     var youtubeVideoID: String? {
@@ -120,6 +147,18 @@ enum RadioSource: Equatable {
             return videoID
         }
         return nil
+    }
+
+    var twitchChannelName: String? {
+        if case let .twitch(channelName) = self {
+            return channelName
+        }
+        return nil
+    }
+
+    var twitchPreviewImageURL: URL? {
+        guard let channelName = twitchChannelName else { return nil }
+        return URL(string: "https://static-cdn.jtvnw.net/previews-ttv/live_user_\(channelName)-640x360.jpg")
     }
 
     var directVideoURL: URL? {
@@ -131,6 +170,8 @@ enum RadioSource: Equatable {
 
     var stableID: String {
         switch self {
+        case let .bilibiliLive(roomID):
+            return "bilibili-live:\(roomID)"
         case let .chillhop(stationID):
             return "chillhop:\(stationID)"
         case let .directStream(trackID, _):
@@ -139,6 +180,8 @@ enum RadioSource: Equatable {
             return "direct-video:\(trackID)"
         case let .radioCo(trackID, stationID):
             return "radioco:\(stationID):\(trackID)"
+        case let .twitch(channelName):
+            return "twitch:\(channelName)"
         case let .youtube(videoID):
             return "youtube:\(videoID)"
         }
@@ -156,6 +199,12 @@ extension CustomStation {
         let resolvedSource = CustomStationSourceResolver.resolve(station: self)
         let radioStation: RadioStation
         switch resolvedSource {
+        case let .bilibiliLive(roomID):
+            radioStation = RadioStation(
+                providerName: "Bilibili",
+                badgeSubtitle: "Embedded live",
+                source: .bilibiliLive(roomID: roomID)
+            )
         case let .youtube(videoID):
             radioStation = RadioStation(
                 providerName: "YouTube",
@@ -173,6 +222,12 @@ extension CustomStation {
                 providerName: "Direct Audio",
                 badgeSubtitle: "Direct audio stream",
                 source: .directStream(trackID: Self.stableNegativeID(for: id), url: url)
+            )
+        case let .twitch(channelName):
+            radioStation = RadioStation(
+                providerName: "Twitch",
+                badgeSubtitle: "Embedded stream",
+                source: .twitch(channelName: channelName)
             )
         case nil:
             radioStation = RadioStation(
@@ -207,6 +262,12 @@ extension BuiltInStationOverride {
         let resolvedSource = CustomStationSourceResolver.resolve(override: self)
         let radioStation: RadioStation
         switch resolvedSource {
+        case let .bilibiliLive(roomID):
+            radioStation = RadioStation(
+                providerName: "Bilibili",
+                badgeSubtitle: "Embedded live",
+                source: .bilibiliLive(roomID: roomID)
+            )
         case let .youtube(videoID):
             radioStation = RadioStation(
                 providerName: "YouTube",
@@ -224,6 +285,12 @@ extension BuiltInStationOverride {
                 providerName: "Direct Audio",
                 badgeSubtitle: "Direct audio stream",
                 source: .directStream(trackID: Self.stableNegativeID(for: presetID), url: url)
+            )
+        case let .twitch(channelName):
+            radioStation = RadioStation(
+                providerName: "Twitch",
+                badgeSubtitle: "Embedded stream",
+                source: .twitch(channelName: channelName)
             )
         case nil:
             radioStation = RadioStation(

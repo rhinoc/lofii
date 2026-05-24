@@ -1,3 +1,8 @@
+---
+name: lofi-media-generation
+description: Generate custom GIF and video media for Lofii from pixel-art packs, parallax layer packs, sprite sheets, and Aseprite exports.
+---
+
 # Lofii Media Generation
 
 Use this skill when creating custom GIF/video media for Lofii from downloaded pixel-art packs, parallax layer packs, sprite sheets, or Aseprite exports.

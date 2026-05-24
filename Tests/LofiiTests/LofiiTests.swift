@@ -63,6 +63,35 @@ func icyMetadataParserExtractsStreamFields() throws {
 }
 
 @Test
+func youtubeReadoutTextRemovesEmojiButKeepsPlainText() throws {
+    let sanitized = StationMetadataService.sanitizeYouTubeReadoutText(
+        "Lo-fi girl 👩‍💻 study 🎧 24/7 1️⃣"
+    )
+
+    #expect(sanitized == "Lo-fi girl study 24/7")
+}
+
+@Test
+func bilibiliLiveMetadataPrefersUserCoverForArtwork() throws {
+    let data = """
+    {
+      "code": 0,
+      "data": {
+        "title": "  全新中式恐怖游戏  ",
+        "user_cover": "https://i0.hdslb.com/bfs/live/user_cover/cover.jpg",
+        "cover": null,
+        "keyframe": "https://i0.hdslb.com/bfs/live-key-frame/keyframe.jpg"
+      }
+    }
+    """.data(using: .utf8)!
+
+    let metadata = try #require(StationMetadataService.bilibiliLiveMetadata(from: data))
+    #expect(metadata.title == "全新中式恐怖游戏")
+    #expect(metadata.artists == "Bilibili")
+    #expect(metadata.image == URL(string: "https://i0.hdslb.com/bfs/live/user_cover/cover.jpg"))
+}
+
+@Test
 func liveTrackIndexFindsCurrentTrackFromPlaylist() async throws {
     let now = Date()
     let playlist = [
@@ -154,9 +183,20 @@ func presetDisplayNameUsesSceneNameByDefault() throws {
 func trackArtworkSupportIsLimitedToMetadataProviders() throws {
     #expect(RadioSource.chillhop(stationID: 12354).supportsTrackArtwork)
     #expect(RadioSource.radioCo(trackID: -3001, stationID: "sc9cb59935").supportsTrackArtwork)
+    #expect(!RadioSource.bilibiliLive(roomID: 545068).supportsTrackArtwork)
     #expect(!RadioSource.directStream(trackID: -2001, url: URL(string: "https://example.com/live.aac")!).supportsTrackArtwork)
     #expect(!RadioSource.directVideo(trackID: -2002, url: URL(string: "https://example.com/live.m3u8")!).supportsTrackArtwork)
+    #expect(RadioSource.twitch(channelName: "twitchdev").supportsTrackArtwork)
     #expect(!RadioSource.youtube(videoID: "1wckb-eWOxw").supportsTrackArtwork)
+}
+
+@Test
+func twitchSourceProvidesLivePreviewArtworkURL() throws {
+    #expect(
+        RadioSource.twitch(channelName: "jinnytty").twitchPreviewImageURL?.absoluteString ==
+            "https://static-cdn.jtvnw.net/previews-ttv/live_user_jinnytty-640x360.jpg"
+    )
+    #expect(RadioSource.youtube(videoID: "1wckb-eWOxw").twitchPreviewImageURL == nil)
 }
 
 @Test
@@ -179,6 +219,47 @@ func youtubeURLParserRejectsNonVideoShapes() throws {
 @Test
 func customStationSourceResolverDetectsYouTube() throws {
     #expect(CustomStationSourceResolver.resolve("https://www.youtube.com/watch?v=1wckb-eWOxw") == .youtube(videoID: "1wckb-eWOxw"))
+}
+
+@Test
+func bilibiliLiveURLParserAcceptsCommonRoomShapes() throws {
+    #expect(BilibiliLiveURLParser.roomID(from: "https://live.bilibili.com/545068") == 545068)
+    #expect(BilibiliLiveURLParser.roomID(from: "live.bilibili.com/545068?spm_id_from=333.1007") == 545068)
+    #expect(BilibiliLiveURLParser.roomID(from: "545068") == 545068)
+}
+
+@Test
+func bilibiliLiveURLParserRejectsNonRoomShapes() throws {
+    #expect(BilibiliLiveURLParser.roomID(from: "https://www.bilibili.com/video/BV123") == nil)
+    #expect(BilibiliLiveURLParser.roomID(from: "https://live.bilibili.com/blackboard/activity") == nil)
+    #expect(BilibiliLiveURLParser.roomID(from: "not-a-room") == nil)
+}
+
+@Test
+func customStationSourceResolverDetectsBilibiliLive() throws {
+    #expect(CustomStationSourceResolver.resolve("https://live.bilibili.com/545068") == .bilibiliLive(roomID: 545068))
+}
+
+@Test
+func twitchURLParserAcceptsCommonChannelShapes() throws {
+    #expect(TwitchURLParser.channelName(from: "https://www.twitch.tv/twitchdev") == "twitchdev")
+    #expect(TwitchURLParser.channelName(from: "twitch.tv/TwitchDev?ref=lofii") == "twitchdev")
+    #expect(TwitchURLParser.channelName(from: "https://m.twitch.tv/monstercat") == "monstercat")
+    #expect(TwitchURLParser.channelName(from: "twitchdev") == "twitchdev")
+}
+
+@Test
+func twitchURLParserRejectsNonChannelShapes() throws {
+    #expect(TwitchURLParser.channelName(from: "https://www.twitch.tv/videos/123456") == nil)
+    #expect(TwitchURLParser.channelName(from: "https://www.twitch.tv/directory/category/music") == nil)
+    #expect(TwitchURLParser.channelName(from: "https://clips.twitch.tv/FineSlug") == nil)
+    #expect(TwitchURLParser.channelName(from: "https://example.com/twitchdev") == nil)
+    #expect(TwitchURLParser.channelName(from: "ab") == nil)
+}
+
+@Test
+func customStationSourceResolverDetectsTwitch() throws {
+    #expect(CustomStationSourceResolver.resolve("https://www.twitch.tv/twitchdev") == .twitch(channelName: "twitchdev"))
 }
 
 @Test
@@ -309,6 +390,50 @@ func customYouTubePresetUsesStableCustomIdentityAndSource() throws {
     #expect(preset.pickerAccent.hexRGB == StationThemeColor.mint.hex)
     #expect(preset.radio.source.stableID == "youtube:1wckb-eWOxw")
     #expect(preset.radio.source.youtubeVideoID == "1wckb-eWOxw")
+}
+
+@Test
+func customBilibiliLivePresetUsesStableCustomIdentityAndSource() throws {
+    let id = UUID(uuidString: "3C6E0620-05DE-4B67-8829-EC19E2D6A55A")!
+    let station = CustomStation(
+        id: id,
+        kind: .bilibiliLive,
+        name: "Bilibili Room",
+        url: "https://live.bilibili.com/545068",
+        videoID: "545068",
+        iconID: PixelGlyph.star.stableID,
+        themeColorHex: StationThemeColor.sky.hex
+    )
+
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+
+    #expect(preset.id == "custom-bilibiliLive-\(id.uuidString)")
+    #expect(preset.displayName == "Bilibili Room")
+    #expect(preset.radio.providerName == "Bilibili")
+    #expect(preset.radio.source.stableID == "bilibili-live:545068")
+    #expect(preset.radio.source.bilibiliLiveRoomID == 545068)
+}
+
+@Test
+func customTwitchPresetUsesStableCustomIdentityAndSource() throws {
+    let id = UUID(uuidString: "B4FB4C3A-0175-4B9D-AD09-CA56D346A0A7")!
+    let station = CustomStation(
+        id: id,
+        kind: .twitch,
+        name: "Twitch Dev",
+        url: "https://www.twitch.tv/twitchdev",
+        videoID: "twitchdev",
+        iconID: PixelGlyph.star.stableID,
+        themeColorHex: StationThemeColor.violet.hex
+    )
+
+    let preset = station.lofiiPreset(defaultScene: SceneCatalog.presets[0])
+
+    #expect(preset.id == "custom-twitch-\(id.uuidString)")
+    #expect(preset.displayName == "Twitch Dev")
+    #expect(preset.radio.providerName == "Twitch")
+    #expect(preset.radio.source.stableID == "twitch:twitchdev")
+    #expect(preset.radio.source.twitchChannelName == "twitchdev")
 }
 
 @Test

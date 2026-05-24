@@ -120,10 +120,10 @@ private struct BongoUnifiedStage: View {
         "\(model.visualMode.rawValue)-\(backgroundTaskKey)-\(pack.cacheTag)-\(model.bongoPackReloadToken)-\(model.visualMediaReloadToken)"
     }
 
-    private var youtubeOwnsPrimaryReadiness: Bool {
+    private var embeddedVideoOwnsPrimaryReadiness: Bool {
         !rendersVisualBackground &&
             model.visualMode == .live &&
-            model.currentYouTubeVideoID != nil
+            model.isCurrentStationEmbeddedVideo
     }
 
     /// True when this `loadSessionKey` has finished loading (no transition snow,
@@ -292,12 +292,12 @@ private struct BongoUnifiedStage: View {
             if isBongoBackgroundFullyReadyForCurrentLoadSession {
                 return
             }
-            if !youtubeOwnsPrimaryReadiness {
+            if !embeddedVideoOwnsPrimaryReadiness {
                 model.resetVisualStageLoadingGate(updateBongoLayer: false)
             }
             settledLoadSessionKey = nil
             if !rendersVisualBackground {
-                await loadTransparentOverlay(markPrimaryReady: !youtubeOwnsPrimaryReadiness)
+                await loadTransparentOverlay(markPrimaryReady: !embeddedVideoOwnsPrimaryReadiness)
                 return
             }
             switch model.visualMode {
@@ -1145,7 +1145,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             modelDesktopColorReloadToken = bongoPackReloadToken
         }
         if backgroundChanged || playbackChanged {
-            StageMetalMTKRuntime.syncDrawLoopToPlayback(view: view, isPlaying: isPlaying)
+            StageMetalMTKRuntime.syncDrawLoopToPlayback(
+                view: view,
+                isPlaying: isPlaying || needsVideoFirstFramePreroll
+            )
         }
         self.pack = pack
         self.maxLogicalStageSize = maxLogicalStageSize
@@ -1870,11 +1873,23 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     private func applyPlaybackStateForVideo() {
         guard case .video = backgroundSource else { return }
-        if isPlaying {
+        if isPlaying || needsVideoFirstFramePreroll {
             player?.play()
         } else {
             player?.pause()
         }
+    }
+
+    private var needsVideoFirstFramePreroll: Bool {
+        guard case .video = backgroundSource else { return false }
+        return currentVideoTexture == nil
+    }
+
+    private func settlePausedVideoPrerollIfNeeded() {
+        guard case .video = backgroundSource, !isPlaying else { return }
+        player?.pause()
+        view?.isPaused = true
+        view?.enableSetNeedsDisplay = true
     }
 
     private func loopVideoIfNeeded() {
@@ -1957,6 +1972,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         currentVideoTexture = texture
         currentVideoSize = CGSize(width: width, height: height)
         captureDynamicDesktopColorIfNeeded(from: pixelBuffer)
+        settlePausedVideoPrerollIfNeeded()
     }
 
     private func logVideoNoFrameIfNeeded(itemTime: CMTime) {
@@ -2307,6 +2323,7 @@ private enum BongoStageLayout {
     /// Stage coords are stored as ratios so the cut-line slope is constant
     /// across resizes.
     static func cutLineAngleN(for maxStageSize: CGSize, desktopLayout: BongoDesktopLayout) -> CGFloat {
+        guard maxStageSize.width > 0, maxStageSize.height > 0 else { return 0 }
         let stageRatio = maxStageSize.width / maxStageSize.height
         return stageRatio * CGFloat(tan(Double(desktopLayout.cutLineAngleDeg) * .pi / 180.0))
     }
@@ -2317,6 +2334,7 @@ private enum BongoStageLayout {
         maxFittedStageHeightFractionOfContainer: CGFloat = 1
     ) -> CGSize {
         guard container.width > 0, container.height > 0 else { return .zero }
+        guard maxStageSize.width > 0, maxStageSize.height > 0 else { return .zero }
 
         let hFrac = min(max(maxFittedStageHeightFractionOfContainer, 0), 1)
         let fitHeight = container.height * hFrac

@@ -45,7 +45,7 @@ jobs:
           NEW="$(scripts/update_version.sh)"
           echo "version=$NEW" >>"$GITHUB_OUTPUT"
 
-      - name: Build release zip
+      - name: Build release DMG
         run: scripts/build_release.sh
 
       - name: Update Sparkle appcast
@@ -59,24 +59,24 @@ jobs:
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: dist/lofii-${{ steps.ver.outputs.version }}-macos.zip
-          asset_name: lofii-${{ steps.ver.outputs.version }}-macos.zip
+          file: dist/lofii-${{ steps.ver.outputs.version }}-macos.dmg
+          asset_name: lofii-${{ steps.ver.outputs.version }}-macos.dmg
           tag: v${{ steps.ver.outputs.version }}
           overwrite: true
           body: |
             ## macOS install note (Gatekeeper / quarantine)
 
-            The zip contains `lofii.app`. Browser downloads are quarantined by macOS (`com.apple.quarantine`). Builds that are **not** Developer ID-signed and **notarized** may show a security warning on first open.
+            The DMG contains `lofii.app` and an Applications shortcut. Browser downloads are quarantined by macOS (`com.apple.quarantine`). Builds that are **not** Developer ID-signed and **notarized** may show a security warning on first open.
 
-            After unzipping, remove quarantine (adjust the path to where you unzipped the app):
+            Open the DMG and drag `lofii.app` to Applications. If macOS blocks first launch, remove quarantine from the installed app:
 
             ```bash
-            xattr -dr com.apple.quarantine /path/to/lofii.app
+            xattr -dr com.apple.quarantine /Applications/lofii.app
             ```
 
             Or **Control-click (right-click) the app → Open** once and confirm.
 
-            More detail: [README — Install from GitHub Releases](https://github.com/${{ github.repository }}/blob/main/README.md#install-from-github-releases) · [SPARKLE.md (section 7)](https://github.com/${{ github.repository }}/blob/main/SPARKLE.md#7-gatekeeper-quarantine-and-downloads-without-notarization)
+            More detail: [README — Install](https://github.com/${{ github.repository }}/blob/main/README.md#install) · [SPARKLE.md (section 7)](https://github.com/${{ github.repository }}/blob/main/SPARKLE.md#7-gatekeeper-quarantine-and-downloads-without-notarization)
 
       - name: Commit version bump
         run: scripts/commit_release.sh

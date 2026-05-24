@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Waveform Animation Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: #080909;
+      color: #dfeee8;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      padding: 28px;
+    }
+    h1 {
+      margin: 0 0 20px;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0;
+      color: #8dffbd;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 18px 22px;
+      max-width: 980px;
+    }
+    .demo {
+      display: grid;
+      gap: 10px;
+      padding-bottom: 14px;
+      border-bottom: 1px solid rgba(141, 255, 189, 0.18);
+    }
+    .label {
+      font-size: 11px;
+      color: rgba(223, 238, 232, 0.72);
+    }
+    canvas {
+      width: 180px;
+      height: 28px;
+      image-rendering: pixelated;
+    }
+  </style>
+</head>
+<body>
+  <h1>Waveform motion types</h1>
+  <main class="grid">
+    <section class="demo"><canvas data-kind="eq"></canvas><div class="label">01 random EQ</div></section>
+    <section class="demo"><canvas data-kind="sine"></canvas><div class="label">02 traveling sine</div></section>
+    <section class="demo"><canvas data-kind="scanner"></canvas><div class="label">03 scanner pulse</div></section>
+    <section class="demo"><canvas data-kind="ripple"></canvas><div class="label">04 center ripple</div></section>
+    <section class="demo"><canvas data-kind="steps"></canvas><div class="label">05 step chaser</div></section>
+    <section class="demo"><canvas data-kind="comet"></canvas><div class="label">06 comet tail</div></section>
+    <section class="demo"><canvas data-kind="scope"></canvas><div class="label">07 oscilloscope bars</div></section>
+    <section class="demo"><canvas data-kind="voice"></canvas><div class="label">08 voice memo lobes</div></section>
+    <section class="demo"><canvas data-kind="scrub"></canvas><div class="label">09 scrubber progress</div></section>
+    <section class="demo"><canvas data-kind="glitch"></canvas><div class="label">10 glitch equalizer</div></section>
+    <section class="demo"><canvas data-kind="blocks"></canvas><div class="label">11 spectrum blocks</div></section>
+    <section class="demo"><canvas data-kind="phase"></canvas><div class="label">12 phase bars</div></section>
+  </main>
+
+  <script>
+    const bars = 20;
+    const color = '#8dffbd';
+    const dim = 'rgba(141, 255, 189, 0.23)';
+    const canvases = [...document.querySelectorAll('canvas')];
+
+    for (const canvas of canvases) {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(180 * dpr);
+      canvas.height = Math.round(28 * dpr);
+      canvas.getContext('2d').scale(dpr, dpr);
+    }
+
+    function ease(x) {
+      return 0.5 - Math.cos(Math.max(0, Math.min(1, x)) * Math.PI) * 0.5;
+    }
+
+    function draw(canvas, time) {
+      const ctx = canvas.getContext('2d');
+      const kind = canvas.dataset.kind;
+      const w = 180;
+      const h = 28;
+      const gap = 2;
+      const bw = Math.floor((w - gap * (bars - 1)) / bars);
+      const primarySpeed = 0.0024;
+      const secondarySpeed = 0.0009;
+      ctx.clearRect(0, 0, w, h);
+
+      for (let i = 0; i < bars; i++) {
+        const x = i * (bw + gap);
+        let level = 0.12;
+        let alpha = 1;
+        let yOffset = 0;
+
+        if (kind === 'eq') {
+          level = 0.18 + 0.82 * Math.abs(Math.sin(time * primarySpeed + i * 1.9) * Math.cos(time * secondarySpeed + i));
+        }
+
+        if (kind === 'sine') {
+          level = 0.18 + 0.82 * ease((Math.sin(time * 0.005 - i * 0.55) + 1) / 2);
+        }
+
+        if (kind === 'scanner') {
+          const head = ((time * 0.012) % bars);
+          const dist = Math.min(Math.abs(i - head), bars - Math.abs(i - head));
+          level = 0.18 + 0.35 * Math.max(0, 1 - dist / 4);
+          alpha = 0.25 + 0.75 * Math.max(0, 1 - dist / 5);
+        }
+
+        if (kind === 'ripple') {
+          const center = (bars - 1) / 2;
+          const ring = (time * 0.007) % (center + 2);
+          const dist = Math.abs(Math.abs(i - center) - ring);
+          level = 0.16 + 0.84 * Math.max(0, 1 - dist / 2);
+        }
+
+        if (kind === 'steps') {
+          const head = Math.floor(time * 0.01) % bars;
+          const trail = (i - head + bars) % bars;
+          level = trail < 4 ? [1, 0.72, 0.44, 0.24][trail] : 0.12;
+          yOffset = trail === 0 ? -3 : 0;
+        }
+
+        if (kind === 'comet') {
+          const head = (time * 0.01) % bars;
+          const trail = (head - i + bars) % bars;
+          const tail = Math.max(0, 1 - trail / 7);
+          level = 0.12 + 0.88 * tail;
+          alpha = 0.18 + 0.82 * tail;
+        }
+
+        if (kind === 'voice') {
+          const center = (bars - 1) / 2;
+          const dist = Math.abs(i - center) / center;
+          const pulse = ease((Math.sin(time * 0.004 + i * 0.8) + 1) / 2);
+          level = 0.16 + (1 - dist * 0.7) * pulse * 0.84;
+        }
+
+        if (kind === 'glitch') {
+          const tick = Math.floor(time / 90);
+          const spike = ((tick * 17 + i * 11) % 23) < 4;
+          level = spike ? 0.92 : 0.12 + 0.34 * (((tick + i * 3) % 5) / 4);
+          yOffset = spike && i % 2 === 0 ? -2 : 0;
+        }
+
+        if (kind === 'blocks') {
+          const band = Math.floor(i / 4);
+          const step = Math.floor(time / 160 + band) % 4;
+          level = [0.22, 0.44, 0.72, 1][step] * (0.7 + 0.3 * Math.sin(i));
+        }
+
+        if (kind === 'scope') {
+          const a = Math.sin(i * 0.85 + time * primarySpeed * 0.42);
+          const b = Math.sin(i * 0.28 - time * secondarySpeed * 0.42);
+          level = 0.14 + Math.abs(a * b) * 0.86;
+        }
+
+        if (kind === 'phase') {
+          const a = Math.sin(i * 0.62 + time * primarySpeed);
+          const b = Math.sin(i * 1.15 - time * secondarySpeed);
+          level = 0.18 + ease((a * 0.65 + b * 0.35 + 1) / 2) * 0.82;
+        }
+
+        const bh = Math.max(2, Math.round(level * h));
+        const y = Math.round((h - bh) / 2 + yOffset);
+        ctx.fillStyle = alpha < 0.95 ? `rgba(141, 255, 189, ${alpha})` : color;
+        if (level <= 0.13) ctx.fillStyle = dim;
+        ctx.fillRect(x, y, bw, bh);
+      }
+
+      if (kind === 'scrub') {
+        ctx.clearRect(0, 0, w, h);
+        const progress = (time * 0.00012) % 1;
+        for (let i = 0; i < bars; i++) {
+          const x = i * (bw + gap);
+          const level = 0.18 + 0.82 * Math.abs(Math.sin(i * 1.15));
+          const bh = Math.max(2, Math.round(level * h));
+          const y = Math.round((h - bh) / 2);
+          ctx.fillStyle = i / bars < progress ? color : dim;
+          ctx.fillRect(x, y, bw, bh);
+        }
+        ctx.fillStyle = color;
+        ctx.fillRect(Math.round(progress * w), 0, 2, h);
+      }
+    }
+
+    function loop(time) {
+      for (const canvas of canvases) draw(canvas, time);
+      requestAnimationFrame(loop);
+    }
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

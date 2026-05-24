@@ -23,6 +23,12 @@ Useful probes before editing visual/audio runtime bugs:
 - For Chillhop: fetch the active station API and inspect the current track/artwork URL.
 - For cached media: inspect the real cache file with `ls -l`, `file`, and a direct decode check when possible.
 
+## Visual UI Fixes
+
+- Do not guess geometry constants. Trace the actual source of truth first, including model values, window layer settings, SDK docs, and local runtime values.
+- Avoid hard-coded tuning values. Name them, keep related values derived from the same variable, and document whether a value is an API fact or a visual calibration.
+- When AppKit, SwiftUI, WebKit, and Metal layers overlap, verify which layer can actually draw above which before moving effects between paths.
+
 ## Current Architecture Reminders
 
 - `VisualMode` selection lives in `AppModel`.

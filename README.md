@@ -2,7 +2,8 @@
   <br />
   <img src="./assets/app-icon-transparent.png" alt="Lofii app icon" width="112" height="112" />
   <h1>Lofii</h1>
-  <p><strong>Native macOS</strong> <strong>lofi radio</strong> plus <strong>moving desk scenery</strong>: stream stations, switch scene loops, play custom media, or hang out with <strong>Live2D BongoCat</strong> — a compact on-screen presence so <strong>sound and motion</strong> stay in view without turning into another full-size app.</p>
+  <p>Your desk, but with a soundtrack.<br />
+  Stream lofi stations, fill the screen with ambient scene loops, drop in your own media, or keep a <strong>Live2D BongoCat</strong> tapping away at your side — all in a compact native macOS window that stays out of the way and always within reach.</p>
   <p>
     <a href="https://github.com/rhinoc/lofii/releases">Releases</a>
     &nbsp;·&nbsp;
@@ -19,89 +20,104 @@
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/readme/showcase-gif-night.jpeg" width="260" alt="Lofii media mode with night city background" /></td>
-    <td align="center"><img src="./assets/readme/showcase-gif-moon.jpeg" width="260" alt="Lofii media mode with moonlit scene and station readout" /></td>
-    <td align="center"><img src="./assets/readme/showcase-setup.jpeg" width="260" alt="Lofii setup window with CRT tab selected" /></td>
+    <td align="center"><img src="./assets/showcase-bongocat.jpeg" width="380" alt="Lofii with Live2D BongoCat companion on desktop" /></td>
+    <td align="center"><img src="./assets/showcase-settings.png" width="380" alt="Lofii settings window with CRT and visual effect controls" /></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="./assets/showcase-station.jpeg" width="380" alt="Lofii station picker showing available radio stations" /></td>
+    <td align="center"><img src="./assets/showcase-lofigirl.png" width="380" alt="Lofii ambient scene mode with lofi girl visual" /></td>
   </tr>
 </table>
 
 ## Features
 
-- **Hand-picked stations** — Chillhop, SomaFM, Poolsuite; now-playing when the stream sends it.
-- **Moving wallpaper** — Live, Scene, and Media modes; rainy nights, neon city, imported loops—swap in a click.
-- **Live2D BongoCat** — on your desk, reacting to keys and cursor.
-- **Edge-of-screen player** — hover to drive it; pin on top when you want it always there.
+- 🎧 **Radio that fits your flow** — Start with Chillhop, SomaFM, and Poolsuite, or add your own YouTube, Twitch, Bilibili Live, direct video, and audio stream stations.
+- 🌃 **Ambient visuals in one click** — Switch between Live, Scene, and Media modes with rainy windows, neon city loops, imported files, or current track artwork.
+- 📺 **A tunable retro screen** — Shape the vibe with CRT curvation, vignette, scanlines, motion blur, shattered glass, waveform, glow, and readout styling.
+- 🐾 **Live2D BongoCat companion** — Keep a small desk friend on screen that reacts to keys and cursor, with importable model packs, placement, size, and input controls.
+- 📌 **A player that stays out of the way** — Park it on the screen edge, reveal controls on hover, and pin it above other windows when you want it always visible.
 
 ## Requirements
 
 - **macOS** 26.0 or newer.
-- **Xcode** 26.4 or a compatible Swift 6.3 toolchain.
-- **Live2D Cubism SDK for Native.** This repository does not commit Cubism Core; install it from the official SDK archive before building.
 - **Network access** on first launch for remote scenes, media, radio, and metadata requests.
-- **Release builds with automatic updates:** Sparkle signing keys and, for public distribution, Apple code-signing/notarization credentials.
 
 ## Install
 
-**Download** the latest zip from **[GitHub Releases](https://github.com/rhinoc/lofii/releases)**, unzip it, and open **`lofii.app`** (moving it to **Applications** first is fine).
+Lofii ships as a macOS disk image. Download the latest **`lofii-<version>-macos.dmg`** from **[GitHub Releases](https://github.com/rhinoc/lofii/releases)**.
 
-Downloads from the browser are tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If the build is not **Developer ID**-signed and **notarized** (for example ad-hoc CI builds without an Apple Developer Program membership), macOS may block or warn on first launch.
+1. Open the DMG (double-click the download).
+2. In the mounted window, drag **`lofii.app`** onto the **Applications** shortcut.
+3. Eject the disk image, then launch **Lofii** from **Applications** or Spotlight.
 
-After unzipping, you can remove quarantine from the app bundle:
+The DMG contains `lofii.app` and an **Applications** shortcut only — there is no separate installer or package manager step.
+
+### First launch and Gatekeeper
+
+Browser downloads are tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If macOS warns that the app cannot be opened or is from an unidentified developer, use one of the options below after copying the app to **Applications**.
+
+Remove quarantine from the installed app:
 
 ```bash
-xattr -dr com.apple.quarantine /path/to/lofii.app
+xattr -dr com.apple.quarantine /Applications/lofii.app
 ```
 
-Alternatively, move `lofii.app` to **Applications**, then **Control-click (or right-click) → Open** once and confirm in the dialog—this records an exception for that app.
+Or **Control-click (or right-click) → Open** on `lofii.app` once and confirm in the dialog. macOS records that exception for future launches.
+
+In-app updates (Sparkle) use the same DMG format; after an update finishes, drag the new app to **Applications** the same way if macOS leaves the updated bundle outside `/Applications`.
 
 ## Usage
 
-**First launch** downloads the selected scene or built-in media into the local cache. Scene MP4s are roughly 1-4 MB each.
+**First launch** downloads the selected scene or built-in media into the local cache. Scene MP4s are roughly 1–4 MB each.
 
-**Local cache:**
+### Custom BongoCat models
 
-- Scenes: `~/Library/Caches/Lofii/scenes/`
-- Built-in media: `~/Library/Caches/Lofii/gifs/`
-- Imported BongoCat packs: `~/.lofii/bongo/<name>/`
+Lofii accepts the same Live2D model packs as **[ayangweb/BongoCat](https://github.com/ayangweb/BongoCat)**. Browse community packs in **[Awesome-BongoCat](https://github.com/ayangweb/Awesome-BongoCat)**, download one you like, then copy the unpacked folder into:
 
-Custom BongoCat model import and preparation tools are documented in **[Support/README.md](./Support/README.md)**.
+```text
+~/.lofii/bongo/<pack-name>/
+```
 
-**Keyboard shortcuts:**
+Each subfolder is one entry in the in-app model picker (**Settings → Bongo → Model**, or the right-click menu). After adding or replacing files, choose **Reload Models** so Lofii rescans the directory.
+
+For optional key maps, desktop mask layout, and maintainer prep tools, see **[Support/README.md](./Support/README.md)**.
+
+### Custom media
+
+Drop your own visuals into:
+
+```text
+~/.lofii/media/
+```
+
+Supported formats: **`.gif`**, **`.png`**, **`.jpg`**, **`.jpeg`**, **`.mp4`**, **`.m4v`**, and **`.mov`**. Switch to **Media** mode (right-click menu or settings), then choose **Reload Custom Media** so new files appear in the rotation. Press **`G`** to skip to the next item while in Media mode.
+
+### Custom stations
+
+Open the station picker, click **`+`**, and paste a YouTube, Twitch, Bilibili Live, direct video, or direct audio stream URL. Built-in stations can also be edited and reset from the same picker.
+
+### Visual tuning
+
+Use **Settings** or the right-click menu to adjust CRT effects, shattered glass, and readout style.
+
+### Keyboard shortcuts
 
 - `Space`: play or pause
 - `Command-Left Arrow` / `Command-Right Arrow`: switch stations
 - `G`: next item in Media mode
 
-## Development
+### Local data locations
 
-The repo is a **Swift Package**: `Package.swift` declares an **`executableTarget`** named `lofii` that compiles into the same kind of **`.app`** you download from Releases—SPM is just how the source is organized (`swift build`, `swift run lofii`, or open the package in Xcode), not a different product format for users.
-
-**Stack:** SwiftUI / AppKit (shell), AVFoundation (audio), Metal (scenes / effects), Sparkle (updates), Live2D Cubism Native (BongoCat).
-
-From the repository root, install **Live2D Cubism Core** (not committed here), then build, test, or run the app target:
-
-```bash
-scripts/install_cubism_core.sh
-swift build
-swift test
-swift run lofii
-```
-
-You can also open `Package.swift` in Xcode and run the `lofii` executable target.
-
-Create a local release zip:
-
-```bash
-scripts/build_release.sh
-```
-
-Release automation is documented in **[SPARKLE.md](./SPARKLE.md)**. The release workflow expects GitHub Actions secrets for Sparkle update signing and optional Apple code signing.
+| Location | What it stores | Notes |
+| --- | --- | --- |
+| `~/Library/Application Support/Lofii/` | App-managed settings and station data | Custom stations are saved in `custom-stations.json`. |
+| `~/Library/Caches/Lofii/` | Downloaded scenes, built-in media, and track artwork | Includes `scenes/`, `gifs/`, and `track-artwork/`. Safe to rebuild from remote sources. |
+| `~/.lofii/media/` | User-imported visual media | See **Custom media** above. |
+| `~/.lofii/bongo/<name>/` | User-imported BongoCat model packs | See **Custom BongoCat models** above. |
 
 ## Contributing
 
-**Issues and pull requests** are welcome. Before opening a large change, open an issue to discuss the direction and licensing impact.
-
-For local setup, coding conventions, tests, asset rules, and release boundaries, read **[CONTRIBUTING.md](./CONTRIBUTING.md)**.
+For development setup, coding conventions, tests, asset rules, and release boundaries, read **[CONTRIBUTING.md](./CONTRIBUTING.md)**.
 
 ## Third-Party Assets and Licenses
 

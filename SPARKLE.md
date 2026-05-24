@@ -1,6 +1,6 @@
 # Sparkle Auto-Update (Lofii)
 
-Sparkle 2 is integrated in the app. `SUFeedURL`, `SUPublicEDKey`, and the version values live in `Sources/Lofii/Info.plist` and are embedded into the executable through the linker section. On release, GitHub Actions signs the zip with `sign_update` and inserts a new item into the repository-root `appcast.xml`.
+Sparkle 2 is integrated in the app. `SUFeedURL`, `SUPublicEDKey`, and the version values live in `Sources/Lofii/Info.plist` and are embedded into the executable through the linker section. On release, GitHub Actions signs the DMG with `sign_update` and inserts a new item into the repository-root `appcast.xml`.
 
 ## 1. Generate a Local EdDSA Key
 
@@ -40,7 +40,7 @@ Make sure **`appcast.xml` is available from the default branch through raw GitHu
 
 ## 4. Distribution Format
 
-The release artifact is **`lofii-<version>-macos.zip`**. It contains `lofii.app`, including the Live2D dylib, matching Sparkle's expected `.app` update format.
+The release artifact is **`lofii-<version>-macos.dmg`**. It contains `lofii.app`, including the Live2D dylib, plus an `/Applications` shortcut for manual installs. Sparkle 2 supports DMG archives as update enclosures, so the same artifact can be used for GitHub Releases and appcast updates.
 
 ## 5. Optional: Match the Sparkle Tool Version
 
@@ -68,10 +68,10 @@ If all three values are **unset**, `code_sign.sh` skips the import and `sign_bui
 
 GitHub (and other browsers) mark downloaded archives with the `com.apple.quarantine` extended attribute. Without **Developer ID** signing plus **Apple notarization**, end users often see stricter Gatekeeper behavior than for Mac App Store or fully notarized apps.
 
-After unzipping `lofii-<version>-macos.zip`, users can clear quarantine on `lofii.app`:
+After opening `lofii-<version>-macos.dmg` and dragging the app to Applications, users can clear quarantine on `lofii.app`:
 
 ```bash
-xattr -dr com.apple.quarantine /path/to/lofii.app
+xattr -dr com.apple.quarantine /Applications/lofii.app
 ```
 
 Or use **Control-click → Open** once on the app (macOS records a user-approved open). This is normal for ad-hoc or self-signed builds when the project does not ship a notarized Developer ID build. See also **Install from GitHub Releases** in `README.md`.

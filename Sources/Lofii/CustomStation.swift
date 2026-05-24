@@ -4,7 +4,9 @@ import SwiftUI
 
 struct CustomStation: Codable, Equatable, Identifiable {
     enum Kind: String, Codable {
+        case bilibiliLive
         case youtube
+        case twitch
         case directVideo
         case directAudio
     }
@@ -322,15 +324,116 @@ enum YouTubeURLParser {
     }
 }
 
+enum TwitchURLParser {
+    private static let reservedPathParts: Set<String> = [
+        "about",
+        "activate",
+        "bits",
+        "directory",
+        "downloads",
+        "embed",
+        "inventory",
+        "jobs",
+        "login",
+        "moderator",
+        "p",
+        "popout",
+        "search",
+        "settings",
+        "signup",
+        "subscriptions",
+        "team",
+        "teams",
+        "turbo",
+        "videos",
+        "wallet",
+    ]
+
+    static func channelName(from input: String) -> String? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let bareChannelName = trimmed.lowercased()
+        if !bareChannelName.contains("."),
+           !bareChannelName.contains("/"),
+           !reservedPathParts.contains(bareChannelName),
+           isValidChannelName(bareChannelName) {
+            return bareChannelName
+        }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let components = URLComponents(string: candidate),
+              let host = components.host?.lowercased(),
+              host == "twitch.tv" || host == "www.twitch.tv" || host == "m.twitch.tv"
+        else { return nil }
+
+        let pathParts = components.path
+            .split(separator: "/")
+            .map { String($0).lowercased() }
+        guard let first = pathParts.first,
+              pathParts.count == 1,
+              !reservedPathParts.contains(first),
+              isValidChannelName(first)
+        else { return nil }
+
+        return first
+    }
+
+    private static func isValidChannelName(_ value: String) -> Bool {
+        guard (3...25).contains(value.count) else { return false }
+        return value.allSatisfy { character in
+            character.isLetter || character.isNumber || character == "_"
+        }
+    }
+}
+
+enum BilibiliLiveURLParser {
+    static func roomID(from input: String) -> Int? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if isValidRoomID(trimmed), let roomID = Int(trimmed) {
+            return roomID
+        }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let components = URLComponents(string: candidate),
+              let host = components.host?.lowercased(),
+              host == "live.bilibili.com" || host == "www.live.bilibili.com"
+        else { return nil }
+
+        let pathParts = components.path
+            .split(separator: "/")
+            .map(String.init)
+        guard let first = pathParts.first,
+              isValidRoomID(first),
+              let roomID = Int(first)
+        else { return nil }
+
+        return roomID
+    }
+
+    private static func isValidRoomID(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        return value.allSatisfy(\.isNumber)
+    }
+}
+
 enum CustomStationSource: Equatable {
+    case bilibiliLive(roomID: Int)
     case youtube(videoID: String)
+    case twitch(channelName: String)
     case directVideo(url: URL)
     case directAudio(url: URL)
 
     var kind: CustomStation.Kind {
         switch self {
+        case .bilibiliLive:
+            return .bilibiliLive
         case .youtube:
             return .youtube
+        case .twitch:
+            return .twitch
         case .directVideo:
             return .directVideo
         case .directAudio:
@@ -340,8 +443,12 @@ enum CustomStationSource: Equatable {
 
     var videoID: String {
         switch self {
+        case let .bilibiliLive(roomID):
+            return "\(roomID)"
         case let .youtube(videoID):
             return videoID
+        case let .twitch(channelName):
+            return channelName
         case .directVideo, .directAudio:
             return ""
         }
@@ -349,8 +456,12 @@ enum CustomStationSource: Equatable {
 
     var identity: String {
         switch self {
+        case let .bilibiliLive(roomID):
+            return "bilibili-live:\(roomID)"
         case let .youtube(videoID):
             return "youtube:\(videoID)"
+        case let .twitch(channelName):
+            return "twitch:\(channelName)"
         case let .directVideo(url):
             return "direct-video:\(url.absoluteString)"
         case let .directAudio(url):
@@ -391,6 +502,12 @@ enum CustomStationSourceResolver {
     static func resolve(_ input: String) -> CustomStationSource? {
         if let videoID = YouTubeURLParser.videoID(from: input) {
             return .youtube(videoID: videoID)
+        }
+        if let roomID = BilibiliLiveURLParser.roomID(from: input) {
+            return .bilibiliLive(roomID: roomID)
+        }
+        if let channelName = TwitchURLParser.channelName(from: input) {
+            return .twitch(channelName: channelName)
         }
 
         guard let url = directMediaURL(from: input) else { return nil }
@@ -493,12 +610,24 @@ enum CustomStationSourceResolver {
 
     static func resolve(station: CustomStation) -> CustomStationSource? {
         switch station.kind {
+        case .bilibiliLive:
+            let candidate = station.videoID.isEmpty ? station.url : station.videoID
+            guard let roomID = BilibiliLiveURLParser.roomID(from: candidate) else {
+                return nil
+            }
+            return .bilibiliLive(roomID: roomID)
         case .youtube:
             let candidate = station.videoID.isEmpty ? station.url : station.videoID
             guard let videoID = YouTubeURLParser.videoID(from: candidate) else {
                 return nil
             }
             return .youtube(videoID: videoID)
+        case .twitch:
+            let candidate = station.videoID.isEmpty ? station.url : station.videoID
+            guard let channelName = TwitchURLParser.channelName(from: candidate) else {
+                return nil
+            }
+            return .twitch(channelName: channelName)
         case .directVideo:
             guard let url = directMediaURL(from: station.url) else {
                 return nil
@@ -514,12 +643,24 @@ enum CustomStationSourceResolver {
 
     static func resolve(override: BuiltInStationOverride) -> CustomStationSource? {
         switch override.kind {
+        case .bilibiliLive:
+            let candidate = override.videoID.isEmpty ? override.url : override.videoID
+            guard let roomID = BilibiliLiveURLParser.roomID(from: candidate) else {
+                return nil
+            }
+            return .bilibiliLive(roomID: roomID)
         case .youtube:
             let candidate = override.videoID.isEmpty ? override.url : override.videoID
             guard let videoID = YouTubeURLParser.videoID(from: candidate) else {
                 return nil
             }
             return .youtube(videoID: videoID)
+        case .twitch:
+            let candidate = override.videoID.isEmpty ? override.url : override.videoID
+            guard let channelName = TwitchURLParser.channelName(from: candidate) else {
+                return nil
+            }
+            return .twitch(channelName: channelName)
         case .directVideo:
             guard let url = directMediaURL(from: override.url) else {
                 return nil
@@ -610,7 +751,7 @@ enum CustomStationValidationError: LocalizedError, Equatable {
         case .missingName:
             return "Name is required."
         case .invalidStationURL:
-            return "Paste a YouTube, video, or audio stream URL."
+            return "Paste a YouTube, Twitch, Bilibili Live, video, or audio stream URL."
         case .duplicateStation:
             return "This station is already in your list."
         }

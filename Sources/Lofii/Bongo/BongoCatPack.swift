@@ -118,19 +118,15 @@ enum BongoCatPack: Equatable, Hashable, Sendable {
         return Self.preferredModel3JSONFilename(in: root)
     }
 
-    /// Pixel-sized stage cap (before `BongoStageScaleTier`); bundled uses fixed values, imported prefers `resources/background.png` size halved like Retina parity.
+    /// Logical stage cap (before `BongoStageScaleTier`), derived from
+    /// `resources/background.png` pixel size and halved for Retina parity.
     var maxLogicalStageSize: CGSize {
-        switch self {
-        case .bundled(let kind):
-            return kind.maxLogicalStageSize
-        case .imported(let folderName):
-            let bg = Self.importedPackRoot(folderName: folderName)
-                .appendingPathComponent("resources/background.png")
-            if let px = Self.pngPixelSize(at: bg), px.width > 1, px.height > 1 {
-                return CGSize(width: px.width / 2.0, height: px.height / 2.0)
-            }
-            return BongoCatModelKind.standard.maxLogicalStageSize
+        if let bg = resourcesDirectoryURL?.appendingPathComponent("background.png"),
+           let size = Self.logicalStageSize(fromBackgroundAt: bg)
+        {
+            return size
         }
+        return Self.standardLogicalStageSize()
     }
 
     // MARK: Scan / validate / import
@@ -228,6 +224,21 @@ enum BongoCatPack: Equatable, Hashable, Sendable {
         let h = rep.pixelsHigh
         guard w > 0, h > 0 else { return nil }
         return CGSize(width: CGFloat(w), height: CGFloat(h))
+    }
+
+    private static func logicalStageSize(fromBackgroundAt url: URL) -> CGSize? {
+        guard let px = pngPixelSize(at: url), px.width > 1, px.height > 1 else { return nil }
+        return CGSize(width: px.width / 2.0, height: px.height / 2.0)
+    }
+
+    private static func standardLogicalStageSize() -> CGSize {
+        let pack = BongoCatPack.bundled(.standard)
+        if let bg = pack.resourcesDirectoryURL?.appendingPathComponent("background.png"),
+           let size = logicalStageSize(fromBackgroundAt: bg)
+        {
+            return size
+        }
+        return .zero
     }
 }
 

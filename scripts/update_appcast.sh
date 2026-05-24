@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Append a Sparkle <item> for the current release (signed zip). Requires Sparkle bin/sign_update.
+# Append a Sparkle <item> for the current release (signed DMG). Requires Sparkle bin/sign_update.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -8,10 +8,10 @@ cd "$ROOT"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY not set}"
 : "${SPARKLE_ED_PRIVATE_KEY:?SPARKLE_ED_PRIVATE_KEY not set}"
 
-ZIP_NAME="lofii-${VERSION}-macos.zip"
-ZIP_PATH="$ROOT/dist/$ZIP_NAME"
-if [[ ! -f "$ZIP_PATH" ]]; then
-  echo "Missing zip at $ZIP_PATH" >&2
+DMG_NAME="lofii-${VERSION}-macos.dmg"
+DMG_PATH="$ROOT/dist/$DMG_NAME"
+if [[ ! -f "$DMG_PATH" ]]; then
+  echo "Missing DMG at $DMG_PATH" >&2
   exit 1
 fi
 
@@ -29,9 +29,9 @@ if [[ -z "$SIGN_UPDATE" || ! -x "$SIGN_UPDATE" ]]; then
   exit 1
 fi
 
-ed_sig_length="$(printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - "$ZIP_PATH" | tr -d '\n')"
+ed_sig_length="$(printf '%s\n' "$SPARKLE_ED_PRIVATE_KEY" | "$SIGN_UPDATE" --ed-key-file - "$DMG_PATH" | tr -d '\n')"
 date="$(LC_ALL=C date +'%a, %d %b %Y %H:%M:%S %z')"
-url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${ZIP_NAME}"
+url="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/${DMG_NAME}"
 
 tmp="$(mktemp)"
 cat >"$tmp" <<EOF

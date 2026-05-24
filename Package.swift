@@ -68,9 +68,8 @@ let package = Package(
                 // cache has anything in it. ~7 MB total — kept in-app on
                 // purpose so the retro effect is never gated on connectivity.
                 .copy("Resources/Statics"),
-                // Pixel/grid variable font (Doto, OFL 1.1) used for
-                // all the information text — track title, station name,
-                // volume HUD — to give the widget that lofi.cafe readout look.
+                // Pixel/grid text fonts (Doto primary, BoutiqueBitmap CJK
+                // fallback) plus pixel icon font used throughout the widget.
                 .copy("Resources/Fonts"),
                 // Bongo mode: bundled Live2D assets (native Metal renderer).
                 .copy("Resources/BongoCat"),

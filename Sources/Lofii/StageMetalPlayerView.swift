@@ -456,6 +456,7 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
         guard texture != nil, !deliveredFirstFrame else { return }
         deliveredFirstFrame = true
         onFirstFrameReady?()
+        settlePausedVideoPrerollIfNeeded()
     }
 
     private func configureVideo(url: URL) {
@@ -517,7 +518,7 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
 
     private func applyPlaybackState() {
         guard case .video = source else { return }
-        if isPlaying {
+        if isPlaying || needsVideoFirstFramePreroll {
             player?.play()
         } else {
             player?.pause()
@@ -525,7 +526,22 @@ final class StageMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func applyDrawLoopState() {
-        StageMetalMTKRuntime.syncDrawLoopToPlayback(view: view, isPlaying: isPlaying)
+        StageMetalMTKRuntime.syncDrawLoopToPlayback(
+            view: view,
+            isPlaying: isPlaying || needsVideoFirstFramePreroll
+        )
+    }
+
+    private var needsVideoFirstFramePreroll: Bool {
+        guard case .video = source else { return false }
+        return !deliveredFirstFrame
+    }
+
+    private func settlePausedVideoPrerollIfNeeded() {
+        guard case .video = source, !isPlaying else { return }
+        player?.pause()
+        view?.isPaused = true
+        view?.enableSetNeedsDisplay = true
     }
 
     private func loopVideoIfNeeded() {

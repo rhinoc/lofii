@@ -58,8 +58,10 @@ private func badgeContentWidth(
     // here so the readout can shrink inside the AppKit minimum window width.
     let horizontalOutsets = (ReadoutGlowBleed.horizontal * 2) + 36
     let available = max(96, containerWidth - horizontalOutsets)
+    let maxVisualWidth = containerWidth * 0.5
+    let maxContentWidth = max(1, maxVisualWidth - (ReadoutGlowBleed.horizontal * 2))
     let target = max(200, 250 * scale)
-    return min(available, target)
+    return min(available, target, maxContentWidth)
 }
 
 @MainActor
@@ -188,10 +190,13 @@ struct WidgetRootView: View {
             // Bongo mode owns its own single Metal stage so media, Live2D
             // model, key overlays, and final post pass are processed together.
             let youtubeVideoVisible = model.currentYouTubeVideoID != nil && model.visualMode == .live
+            let bilibiliLiveVisible = model.currentBilibiliLiveRoomID != nil && model.visualMode == .live
+            let twitchVideoVisible = model.currentTwitchChannelName != nil && model.visualMode == .live
+            let embeddedVideoVisible = youtubeVideoVisible || bilibiliLiveVisible || twitchVideoVisible
             let directVideoURL = model.currentDirectVideoURL
             let directVideoVisible = directVideoURL != nil && model.visualMode == .live
             let bongoVisible = model.bongoOverlayVisible
-            let backgroundCRTEnabled = model.crt.enabled && !bongoVisible && !youtubeVideoVisible
+            let backgroundCRTEnabled = model.crt.enabled && !bongoVisible && !embeddedVideoVisible
             let backgroundShatteredGlass = model.shatteredGlass.resolvedForDisplayPipeline(
                 crtMasterEnabled: backgroundCRTEnabled
             )
@@ -202,7 +207,7 @@ struct WidgetRootView: View {
             let backgroundMotionBlurEnabled = backgroundCRTEnabled && model.crt.motionBlur
             let backgroundChromaticAberrationEnabled = backgroundCRTEnabled && model.crt.chromaticAberration
             let backgroundScanlinesEnabled = backgroundCRTEnabled && model.crt.scanlines
-            let youtubeEdgeFadeActive = youtubeVideoVisible && model.crt.enabled && model.crt.vignette
+            let embeddedVideoEdgeFadeActive = embeddedVideoVisible && model.crt.enabled && model.crt.vignette
 
             ZStack {
                 ZStack {
@@ -221,10 +226,38 @@ struct WidgetRootView: View {
                         .accessibilityHidden(!youtubeVideoVisible)
                     }
 
+                    if let roomID = model.currentBilibiliLiveRoomID {
+                        BilibiliLivePlayerView(
+                            roomID: roomID,
+                            isPlaying: model.isPlaying,
+                            volume: model.volume,
+                            videoVisible: bilibiliLiveVisible,
+                            onPlaybackEvent: model.handleBilibiliLivePlaybackEvent
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(bilibiliLiveVisible ? 1 : 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(!bilibiliLiveVisible)
+                    }
+
+                    if let channelName = model.currentTwitchChannelName {
+                        TwitchPlayerView(
+                            channelName: channelName,
+                            isPlaying: model.isPlaying,
+                            volume: model.volume,
+                            videoVisible: twitchVideoVisible,
+                            onPlaybackEvent: model.handleTwitchPlaybackEvent
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .opacity(twitchVideoVisible ? 1 : 0)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(!twitchVideoVisible)
+                    }
+
                         Group {
                             switch model.visualMode {
                             case .live:
-                                if youtubeVideoVisible {
+                                if embeddedVideoVisible {
                                     Color.clear
                                 } else if let directVideoURL, directVideoVisible, !bongoVisible {
                                     StageMetalPlayerView(
@@ -354,8 +387,8 @@ struct WidgetRootView: View {
                         if bongoVisible {
                             BongoView(
                                 isPlaying: shouldRenderMotion,
-                                rendersVisualBackground: !youtubeVideoVisible,
-                                appliesCRT: !youtubeVideoVisible,
+                                rendersVisualBackground: !embeddedVideoVisible,
+                                appliesCRT: !embeddedVideoVisible,
                                 artworkScrollWheel: handleVolumeScrollWheel,
                                 artworkContextMenu: { [weak model] in
                                     guard let model else { return NSMenu() }
@@ -364,7 +397,7 @@ struct WidgetRootView: View {
                             )
                         }
 
-                        if youtubeEdgeFadeActive {
+                        if embeddedVideoEdgeFadeActive {
                             YouTubeEdgeFadeOverlay(
                                 strength: model.crt.vignetteStrength,
                                 cornerRadius: isFullscreen ? 0 : model.widgetWindowContentCornerRadius
@@ -809,24 +842,26 @@ private struct StationPicker: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Text("STATIONS")
-                    .font(.pixel(size: 13))
-                    .kerning(1.2)
-                    .foregroundStyle(.white.opacity(0.84))
+            if editorMode == nil && deleteCandidate == nil {
+                HStack(spacing: 8) {
+                    Text("STATIONS")
+                        .font(.pixel(size: 13))
+                        .kerning(1.2)
+                        .foregroundStyle(.white.opacity(0.84))
 
-                Spacer(minLength: 0)
+                    Spacer(minLength: 0)
 
-                Button {
-                    beginAdd()
-                } label: {
-                    Text("+")
-                        .font(.pixel(size: 18))
-                        .frame(width: 18, height: 18)
+                    Button {
+                        beginAdd()
+                    } label: {
+                        Text("+")
+                            .font(.pixel(size: 18))
+                            .frame(width: 18, height: 18)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(model.accent)
+                    .help("Add station")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(model.accent)
-                .help("Add station")
             }
 
             if editorMode != nil {
@@ -994,8 +1029,6 @@ private struct StationPicker: View {
             }
         }
         .padding(8)
-        .background(Rectangle().fill(Color.white.opacity(0.04)))
-        .overlay(Rectangle().stroke(Color.white.opacity(0.10), lineWidth: 1))
     }
 
     private func pickerRow<Content: View>(
@@ -1182,8 +1215,8 @@ private struct StationPickerRow: View {
                             .lineLimit(1)
                             .truncationMode(.tail)
 
-                        if preset.radio.source.isYouTube {
-                            Text("YOUTUBE")
+                        if preset.radio.source.isEmbeddedVideo {
+                            Text(embeddedSourceLabel(for: preset.radio.source))
                                 .font(.pixel(size: 9))
                                 .foregroundStyle(.white.opacity(0.46))
                                 .lineLimit(1)
@@ -1195,7 +1228,7 @@ private struct StationPickerRow: View {
                         .frame(width: 18, height: 20)
                 }
                 .padding(.horizontal, 8)
-                .padding(.vertical, preset.radio.source.isYouTube ? 4 : 6)
+                .padding(.vertical, preset.radio.source.isEmbeddedVideo ? 4 : 6)
                 .background(
                     Rectangle().fill(
                         selected
@@ -1228,6 +1261,13 @@ private struct StationPickerRow: View {
             }
         }
         .onHover { hovering = $0 }
+    }
+
+    private func embeddedSourceLabel(for source: RadioSource) -> String {
+        if source.isYouTube { return "YOUTUBE" }
+        if source.isTwitch { return "TWITCH" }
+        if source.isBilibiliLive { return "BILIBILI" }
+        return ""
     }
 }
 
@@ -1468,7 +1508,7 @@ private final class StationTextInputView: NSView, NSTextViewDelegate {
     }
 
     private static var pixelNSFont: NSFont {
-        NSFont(name: PixelFont.familyName, size: 12) ?? .systemFont(ofSize: 12)
+        PixelFont.makeNSFont(size: 12) ?? .systemFont(ofSize: 12)
     }
 }
 
@@ -1902,11 +1942,11 @@ private struct TrackBadge: View {
         let innerInsets = badgeInnerInsets(compact: compact, placement: placement)
         let waveformSlotH = 14 * scale
         let marqueeDebugStretch = model.debugModeEnabled
-        let effectiveIsBuffering = model.isCurrentStationYouTube ? model.isYouTubeBuffering : model.isBuffering
-        let hasPlayableReadout = model.currentTrack != nil || model.isCurrentStationYouTube
+        let effectiveIsBuffering = model.isCurrentStationEmbeddedVideo ? model.isEmbeddedVideoBuffering : model.isBuffering
+        let hasPlayableReadout = model.currentTrack != nil || model.isCurrentStationEmbeddedVideo
 
         VStack(spacing: 1) {
-            if model.readoutFontSettings.waveform {
+            if model.isReadoutVisible {
                 // `NSViewRepresentable` expands to fill a proposed max width.
                 // Pin the waveform to a fixed 120×14pt slot inside an `HStack`
                 // so bar math always matches the design width and lines up with
@@ -1921,16 +1961,15 @@ private struct TrackBadge: View {
                     }
                     PixelWaveform(
                         mode: {
-                            if model.isPlaying,
-                               !effectiveIsBuffering,
-                               hasPlayableReadout {
+                            if model.isReadoutWaveformActive, hasPlayableReadout {
                                 return .playing
                             }
-                            if model.isPlaying {
+                            if model.isPlaying, effectiveIsBuffering {
                                 return .loading
                             }
                             return .idle
                         }(),
+                        style: model.readoutFontSettings.waveformStyle,
                         color: model.accent,
                         placement: placement
                     )
@@ -2385,6 +2424,7 @@ private enum PixelWaveformMode: Equatable {
 /// layout path.
 private struct PixelWaveform: NSViewRepresentable {
     let mode: PixelWaveformMode
+    let style: ReadoutWaveformStyle
     let color: Color
     let placement: BadgeHorizontalPlacement
 
@@ -2398,6 +2438,7 @@ private struct PixelWaveform: NSViewRepresentable {
         context.coordinator.attach(to: host)
         context.coordinator.update(
             mode: mode,
+            style: style,
             color: color,
             placement: placement
         )
@@ -2407,6 +2448,7 @@ private struct PixelWaveform: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.update(
             mode: mode,
+            style: style,
             color: color,
             placement: placement
         )
@@ -2431,6 +2473,7 @@ private final class WaveformCoordinator: NSObject {
 
     // Props mirrored from the SwiftUI side.
     private var mode: PixelWaveformMode = .idle
+    private var style: ReadoutWaveformStyle = .retroPulse
     private var cgColor: CGColor = NSColor.white.cgColor
     private var placement: BadgeHorizontalPlacement = .center
 
@@ -2444,15 +2487,18 @@ private final class WaveformCoordinator: NSObject {
 
     fileprivate func update(
         mode: PixelWaveformMode,
+        style: ReadoutWaveformStyle,
         color: Color,
         placement: BadgeHorizontalPlacement
     ) {
         let newCG = NSColor(color).cgColor
         let changed = mode != self.mode
+            || style != self.style
             || newCG != self.cgColor
             || placement != self.placement
 
         self.mode = mode
+        self.style = style
         self.cgColor = newCG
         self.placement = placement
 
@@ -2560,12 +2606,31 @@ private final class WaveformCoordinator: NSObject {
             ctx.setFillColor(cgColor)
             ctx.setAlpha(1)
             let t = timestamp
+            let primarySpeed = 2.4
+            let secondarySpeed = 0.9
             for i in 0..<count {
-                let phase = Double(i) * 0.7
-                let a = cos(t * 2.4 + phase)
-                let b = cos(t * 0.9 - phase * 0.5)
-                let envelope = (a * 0.6 + b * 0.4 + 1) / 2
-                let scaled = 0.20 + envelope * 0.80
+                let scaled: Double
+                switch style {
+                case .randomEQ:
+                    let a = sin(t * primarySpeed + Double(i) * 1.9)
+                    let b = cos(t * secondarySpeed + Double(i))
+                    scaled = 0.18 + abs(a * b) * 0.82
+                case .retroPulse:
+                    let phase = Double(i) * 0.7
+                    let a = cos(t * primarySpeed + phase)
+                    let b = cos(t * secondarySpeed - phase * 0.5)
+                    let envelope = (a * 0.6 + b * 0.4 + 1) / 2
+                    scaled = 0.20 + envelope * 0.80
+                case .oscilloscopeBars:
+                    let a = sin(Double(i) * 0.85 + t * primarySpeed * 0.42)
+                    let b = sin(Double(i) * 0.28 - t * secondarySpeed * 0.42)
+                    scaled = 0.14 + abs(a * b) * 0.86
+                case .phaseBars:
+                    let a = sin(Double(i) * 0.62 + t * primarySpeed)
+                    let b = sin(Double(i) * 1.15 - t * secondarySpeed)
+                    let envelope = (a * 0.65 + b * 0.35 + 1) / 2
+                    scaled = 0.18 + lottieBezier(CGFloat(envelope), x1: 0.45, y1: 0, x2: 0.55, y2: 1) * 0.82
+                }
                 let barH = max(scale, floor(scaled * CGFloat(h)))
                 let x = leadingInset + CGFloat(i) * (barW + gap)
                 let y = (CGFloat(h) - barH) / 2
@@ -2687,7 +2752,7 @@ private struct BottomDock: View {
 
             RetroPlayPauseButton(
                 isPlaying: model.isPlaying,
-                isBuffering: model.isCurrentStationYouTube ? model.isYouTubeBuffering : model.isBuffering,
+                isBuffering: model.isCurrentStationEmbeddedVideo ? model.isEmbeddedVideoBuffering : model.isBuffering,
                 accent: model.accent,
                 action: model.togglePlayback
             )
@@ -2936,8 +3001,8 @@ private struct SettingsOverlay: View {
 
     private var textSize: CGFloat { compact ? 10 : 11 }
     private var titleSize: CGFloat { compact ? 12 : 13 }
-    private var youtubeCRTOnlySupportsVignette: Bool {
-        model.currentYouTubeVideoID != nil && model.visualMode == .live
+    private var embeddedVideoCRTOnlySupportsVignette: Bool {
+        model.isCurrentStationEmbeddedVideo && model.visualMode == .live
     }
 
     private var bongoCatPackChoices: [BongoCatPack] {
@@ -3066,9 +3131,11 @@ private struct SettingsOverlay: View {
                 textSize: textSize
             )
 
-            SettingsToggleRow(
+            SettingsChoiceRow(
                 title: "Waveform",
-                isOn: readoutBool(\.waveform),
+                choices: ReadoutWaveformStyle.allCases,
+                selection: readoutChoice(\.waveformStyle),
+                label: { $0.label },
                 accent: model.accent,
                 textSize: textSize
             )
@@ -3315,7 +3382,7 @@ private struct SettingsOverlay: View {
                     isOn: crtBool(\.curvation),
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3325,7 +3392,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
@@ -3349,7 +3416,7 @@ private struct SettingsOverlay: View {
                     isOn: crtBool(\.chromaticAberration),
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3359,7 +3426,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
@@ -3367,7 +3434,7 @@ private struct SettingsOverlay: View {
                     isOn: crtBool(\.scanlines),
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3377,7 +3444,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3387,7 +3454,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsToggleRow(
@@ -3395,7 +3462,7 @@ private struct SettingsOverlay: View {
                     isOn: crtBool(\.motionBlur),
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3405,7 +3472,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
             }
 
@@ -3420,7 +3487,7 @@ private struct SettingsOverlay: View {
                     isOn: shatteredGlassBool(\.enabled),
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3430,7 +3497,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
 
                 SettingsChoiceRow(
@@ -3440,7 +3507,7 @@ private struct SettingsOverlay: View {
                     label: { $0.label },
                     accent: model.accent,
                     textSize: textSize,
-                    isEnabled: !youtubeCRTOnlySupportsVignette
+                    isEnabled: !embeddedVideoCRTOnlySupportsVignette
                 )
         }
     }
@@ -4243,13 +4310,20 @@ enum SettingsContextMenu {
         shapeItem.submenu = shapeMenu
         readoutMenu.addItem(shapeItem)
 
-        let waveformItem = NSMenuItem(
-            title: "Waveform",
-            action: #selector(MenuTarget.toggleReadoutWaveform(_:)),
-            keyEquivalent: ""
-        )
-        waveformItem.state = model.readoutFontSettings.waveform ? .on : .off
-        waveformItem.target = MenuTarget.shared
+        let waveformItem = NSMenuItem(title: "Waveform", action: nil, keyEquivalent: "")
+        let waveformMenu = NSMenu()
+        for style in ReadoutWaveformStyle.allCases {
+            let item = NSMenuItem(
+                title: style.menuLabel,
+                action: #selector(MenuTarget.selectReadoutWaveformStyle(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = style.rawValue
+            item.state = (model.readoutFontSettings.waveformStyle == style) ? .on : .off
+            item.target = MenuTarget.shared
+            waveformMenu.addItem(item)
+        }
+        waveformItem.submenu = waveformMenu
         readoutMenu.addItem(waveformItem)
 
         let readoutShadowItem = NSMenuItem(
@@ -4529,7 +4603,7 @@ enum SettingsContextMenu {
         menu.addItem(bongoRoot)
 
         // --- CRT submenu ---
-        let crtMetalEffectsAvailable = !(model.currentYouTubeVideoID != nil && model.visualMode == .live)
+        let crtMetalEffectsAvailable = !(model.isCurrentStationEmbeddedVideo && model.visualMode == .live)
         let crtItem = NSMenuItem(title: "CRT", action: nil, keyEquivalent: "")
         let crtMenu = NSMenu()
         let crtEnabledItem = NSMenuItem(
@@ -4854,10 +4928,14 @@ final class MenuTarget: NSObject {
         model.isReadoutVisible.toggle()
     }
 
-    @objc func toggleReadoutWaveform(_ sender: NSMenuItem) {
-        guard let model else { return }
+    @objc func selectReadoutWaveformStyle(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let style = ReadoutWaveformStyle(rawValue: raw),
+              let model
+        else { return }
         var s = model.readoutFontSettings
-        s.waveform.toggle()
+        s.waveform = true
+        s.waveformStyle = style
         model.readoutFontSettings = s
     }
 

@@ -24,11 +24,11 @@ struct LofiiApp: App {
         if updaterController.updater.automaticallyChecksForUpdates {
             updaterController.updater.checkForUpdatesInBackground()
         }
-        // Register both bundled fonts before any view tries to use them.
+        // Register bundled text/icon fonts before any view tries to use them.
         // Doing it in App.init guarantees they're resolvable on the very
         // first render (including SwiftUI previews) — `Font.pixel(...)`
-        // for the Doto readout text and `PixelIcon(...)` for every
-        // glyph in the chrome.
+        // for the Doto readout text with its CJK fallback, and
+        // `PixelIcon(...)` for every glyph in the chrome.
         PixelFont.registerIfNeeded()
         PixelIcons.registerIfNeeded()
     }
@@ -48,7 +48,7 @@ struct LofiiApp: App {
                     WindowConfigurator(
                         alwaysOnTop: model.alwaysOnTop,
                         contentCornerRadius: model.widgetWindowContentCornerRadius,
-                        darkenContentBorder: model.currentYouTubeVideoID != nil &&
+                        darkenContentBorder: model.isCurrentStationEmbeddedVideo &&
                             model.visualMode == .live &&
                             model.crt.enabled &&
                             model.crt.vignette

@@ -512,12 +512,40 @@ enum ReadoutFontSlant: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 }
 
+enum ReadoutWaveformStyle: String, CaseIterable, Identifiable, Codable, Sendable {
+    case randomEQ
+    case retroPulse
+    case oscilloscopeBars
+    case phaseBars
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .randomEQ: return "Random EQ"
+        case .retroPulse: return "Retro Pulse"
+        case .oscilloscopeBars: return "Osc Bars"
+        case .phaseBars: return "Phase Bars"
+        }
+    }
+
+    var menuLabel: String {
+        switch self {
+        case .randomEQ: return "Random EQ"
+        case .retroPulse: return "Retro Pulse"
+        case .oscilloscopeBars: return "Oscilloscope Bars"
+        case .phaseBars: return "Phase Bars"
+        }
+    }
+}
+
 struct ReadoutFontSettings: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case weight
         case elementShape
         case slant
         case waveform
+        case waveformStyle
         case textShadow
         case textGlow
     }
@@ -527,6 +555,7 @@ struct ReadoutFontSettings: Codable, Equatable, Sendable {
     var slant: ReadoutFontSlant = .upright
     /// Mini spectrum above the station name (Readout menu).
     var waveform: Bool = true
+    var waveformStyle: ReadoutWaveformStyle = .retroPulse
     /// Black drop shadow under readout glyphs; independent of Readout ▸ Text Glow.
     var textShadow: Bool = true
     /// Colored bloom on readout text and waveform.
@@ -540,6 +569,7 @@ struct ReadoutFontSettings: Codable, Equatable, Sendable {
         elementShape = (try? container.decodeIfPresent(ReadoutFontElementShape.self, forKey: .elementShape)) ?? .square
         slant = (try? container.decodeIfPresent(ReadoutFontSlant.self, forKey: .slant)) ?? .upright
         waveform = (try? container.decodeIfPresent(Bool.self, forKey: .waveform)) ?? true
+        waveformStyle = (try? container.decodeIfPresent(ReadoutWaveformStyle.self, forKey: .waveformStyle)) ?? .retroPulse
         textShadow = (try? container.decodeIfPresent(Bool.self, forKey: .textShadow)) ?? true
         textGlow = (try? container.decodeIfPresent(Bool.self, forKey: .textGlow)) ?? true
     }
@@ -593,37 +623,29 @@ enum BongoDesktopMaskTint: String, CaseIterable, Codable, Sendable {
 
 /// Bundled Live2D pack for the native Bongo overlay (`BongoCat/<folder>/…`).
 enum BongoCatModelKind: String, CaseIterable, Codable, Sendable {
-    case wendi
     /// Default preset (`standard`) from [ayangweb/BongoCat](https://github.com/ayangweb/BongoCat).
     case standard
-    case bangboo
 
     /// Bundled model when preferences are absent or not recognized.
-    static let bundledDefault: BongoCatModelKind = .bangboo
+    static let bundledDefault: BongoCatModelKind = .standard
 
     var menuLabel: String {
         switch self {
-        case .wendi: return "Wendi"
         case .standard: return "BongoCat"
-        case .bangboo: return "Bangboo"
         }
     }
 
     /// Subfolder under `BongoCat/` in the module resource bundle.
     var bundleFolderName: String {
         switch self {
-        case .wendi: return "wendi"
         case .standard: return "standard"
-        case .bangboo: return "bangboo"
         }
     }
 
     /// MOC filename stem (without `.moc3`) for native bootstrap diagnostics.
     var mocStem: String {
         switch self {
-        case .wendi: return "demomodel"
         case .standard: return "demomodel"
-        case .bangboo: return "demomodel"
         }
     }
 
@@ -635,16 +657,6 @@ enum BongoCatModelKind: String, CaseIterable, Codable, Sendable {
 
     var leftKeysSubdirectory: String {
         "\(resourcesSubdirectory)/left-keys"
-    }
-
-    /// Maximum stage size in logical points. Source Bongo assets are pixel-sized;
-    /// halving keeps their intended physical size on Retina displays.
-    var maxLogicalStageSize: CGSize {
-        switch self {
-        case .wendi: return CGSize(width: 979 / 2.0, height: 566 / 2.0)
-        case .standard: return CGSize(width: 612 / 2.0, height: 354 / 2.0)
-        case .bangboo: return CGSize(width: 800 / 2.0, height: 660 / 2.0)
-        }
     }
 }
 
@@ -719,7 +731,7 @@ enum BongoStageScaleTier: String, CaseIterable, Identifiable, Codable, Sendable 
 
     var id: String { rawValue }
 
-    /// Multiplier applied to `BongoCatModelKind.maxLogicalStageSize`.
+    /// Multiplier applied to the pack's logical stage size.
     var scale: CGFloat {
         switch self {
         case .small: return 0.5
@@ -788,15 +800,6 @@ enum BongoMouseCursorSpace: String, CaseIterable, Identifiable, Codable, Sendabl
         case .currentDisplay: return "Current display"
         case .allDisplays: return "All displays"
         }
-    }
-}
-
-extension BongoCatModelKind {
-    /// `maxLogicalStageSize` scaled by the user’s size tier (aspect ratio unchanged).
-    func maxLogicalStageSize(scaledBy tier: BongoStageScaleTier) -> CGSize {
-        let base = maxLogicalStageSize
-        let s = tier.scale
-        return CGSize(width: base.width * s, height: base.height * s)
     }
 }
 
@@ -883,7 +886,7 @@ final class AppModel: ObservableObject {
             if bongoOverlayVisible {
                 BongoInputMonitor.requestAccessibilityTrustPromptIfNeeded()
                 markBongoLive2DPending()
-                if !liveModeUsesYouTubeVideoBackground {
+                if !liveModeUsesEmbeddedVideoBackground {
                     resetVisualStageLoadingGate(updateBongoLayer: false)
                 }
             } else {
@@ -1002,6 +1005,10 @@ final class AppModel: ObservableObject {
     /// Drives the spinner overlay on the play/pause button.
     @Published private(set) var isBuffering = false
     @Published private(set) var isYouTubeBuffering = false
+    @Published private(set) var isTwitchBuffering = false
+    @Published private(set) var isTwitchUnavailable = false
+    @Published private(set) var isBilibiliLiveBuffering = false
+    @Published private(set) var isBilibiliLiveUnavailable = false
     /// UI-level visibility gate for high-frequency visual rendering work.
     /// When false (widget hidden via menubar), scene/gif playback and
     /// animated overlays pause to reduce CPU/GPU usage.
@@ -1064,9 +1071,6 @@ final class AppModel: ObservableObject {
         didSet {
             guard bongoCatPack != oldValue else { return }
             UserDefaults.standard.set(bongoCatPack.persistenceValue, forKey: Self.bongoCatPackSelectionKey)
-            if case .bundled(let kind) = bongoCatPack {
-                UserDefaults.standard.set(kind.rawValue, forKey: Self.bongoCatModelKindKey)
-            }
             if bongoOverlayVisible {
                 markBongoLive2DPending()
             }
@@ -1145,7 +1149,6 @@ final class AppModel: ObservableObject {
     private static let bongoOverlayVisibleKey = "lofii.bongoOverlayVisible"
     private static let debugModeEnabledKey = "lofii.debugModeEnabled"
     private static let bongoDesktopMaskTintKey = "lofii.bongoDesktopMaskTint"
-    private static let bongoCatModelKindKey = "lofii.bongoCatModelKind"
     private static let bongoCatPackSelectionKey = "lofii.bongoCatPackSelection"
     private static let bongoStageAnchorKey = "lofii.bongoStageAnchor"
     private static let bongoStagePlacementKey = "lofii.bongoStagePlacement"
@@ -1232,15 +1235,6 @@ final class AppModel: ObservableObject {
         return value
     }
 
-    private static func loadBongoCatModelKind() -> BongoCatModelKind {
-        guard let raw = UserDefaults.standard.string(forKey: bongoCatModelKindKey),
-              let value = BongoCatModelKind(rawValue: raw)
-        else {
-            return BongoCatModelKind.bundledDefault
-        }
-        return value
-    }
-
     private static func loadBongoCatPack() -> BongoCatPack {
         if let raw = UserDefaults.standard.string(forKey: bongoCatPackSelectionKey),
            let pack = BongoCatPack.decode(persistence: raw)
@@ -1251,7 +1245,7 @@ final class AppModel: ObservableObject {
             }
             return resolved
         }
-        return .bundled(loadBongoCatModelKind())
+        return .bundled(BongoCatModelKind.bundledDefault)
     }
 
     private static func loadBongoStagePlacement() -> BongoStagePlacement {
@@ -1347,6 +1341,10 @@ final class AppModel: ObservableObject {
             return "direct-video:\(url.absoluteString)"
         case let .radioCo(_, stationID):
             return "radioco:\(stationID)"
+        case let .bilibiliLive(roomID):
+            return "bilibili-live:\(roomID)"
+        case let .twitch(channelName):
+            return "twitch:\(channelName)"
         case let .youtube(videoID):
             return "youtube:\(videoID)"
         }
@@ -1355,6 +1353,10 @@ final class AppModel: ObservableObject {
     private func activateSelectedPreset() {
         UserDefaults.standard.set(currentPreset.id, forKey: Self.selectedPresetIDKey)
         isYouTubeBuffering = false
+        isTwitchBuffering = false
+        isTwitchUnavailable = false
+        isBilibiliLiveBuffering = false
+        isBilibiliLiveUnavailable = false
         cancelPlaybackRecovery()
         resetChillhopPlaybackState()
         currentTrack = nil
@@ -1447,7 +1449,7 @@ final class AppModel: ObservableObject {
         // as "loading" before they ever press play.
         audioEngine.onPlaybackStateChange = { [weak self] state in
             guard let self else { return }
-            if self.currentPreset.radio.source.isYouTube {
+            if self.currentPreset.radio.source.isEmbeddedVideo {
                 self.isBuffering = false
                 self.cancelPlaybackRecovery()
                 return
@@ -1470,7 +1472,7 @@ final class AppModel: ObservableObject {
         }
         audioEngine.onPlaybackStallDetected = { [weak self] reason in
             guard let self else { return }
-            if self.currentPreset.radio.source.isYouTube {
+            if self.currentPreset.radio.source.isEmbeddedVideo {
                 self.isBuffering = false
                 self.cancelPlaybackRecovery()
                 return
@@ -1664,12 +1666,50 @@ final class AppModel: ObservableObject {
         currentPreset.radio.source.youtubeVideoID
     }
 
+    var currentBilibiliLiveRoomID: Int? {
+        currentPreset.radio.source.bilibiliLiveRoomID
+    }
+
+    var currentTwitchChannelName: String? {
+        currentPreset.radio.source.twitchChannelName
+    }
+
     var currentDirectVideoURL: URL? {
         currentPreset.radio.source.directVideoURL
     }
 
     var isCurrentStationYouTube: Bool {
         currentPreset.radio.source.isYouTube
+    }
+
+    var isCurrentStationBilibiliLive: Bool {
+        currentPreset.radio.source.isBilibiliLive
+    }
+
+    var isCurrentStationTwitch: Bool {
+        currentPreset.radio.source.isTwitch
+    }
+
+    var isCurrentStationEmbeddedVideo: Bool {
+        currentPreset.radio.source.isEmbeddedVideo
+    }
+
+    var isEmbeddedVideoBuffering: Bool {
+        isYouTubeBuffering || isTwitchBuffering || isBilibiliLiveBuffering
+    }
+
+    var isReadoutWaveformActive: Bool {
+        guard isPlaying else { return false }
+        if isCurrentStationBilibiliLive {
+            return !isBilibiliLiveUnavailable && !isBilibiliLiveBuffering
+        }
+        if isCurrentStationTwitch {
+            return !isTwitchUnavailable && !isTwitchBuffering
+        }
+        if isCurrentStationYouTube {
+            return !isYouTubeBuffering
+        }
+        return !isBuffering
     }
 
     var isCurrentStationDirectVideo: Bool {
@@ -1679,12 +1719,14 @@ final class AppModel: ObservableObject {
     private var liveModeUsesTrackArtworkBackground: Bool {
         visualMode == .live &&
             currentYouTubeVideoID == nil &&
+            currentBilibiliLiveRoomID == nil &&
+            currentTwitchChannelName == nil &&
             currentDirectVideoURL == nil
     }
 
-    private var liveModeUsesYouTubeVideoBackground: Bool {
+    private var liveModeUsesEmbeddedVideoBackground: Bool {
         visualMode == .live &&
-            currentYouTubeVideoID != nil
+            isCurrentStationEmbeddedVideo
     }
 
     var isSceneVariantControlAvailable: Bool {
@@ -1751,6 +1793,110 @@ final class AppModel: ObservableObject {
             if !isPlaying {
                 streamStatus = "Paused"
             }
+        }
+    }
+
+    func handleTwitchPlaybackEvent(_ event: TwitchPlaybackEvent) {
+        guard currentPreset.radio.source.isTwitch else { return }
+        DiagnosticLog.appendPlayback(
+            "model.twitchEvent preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) event=\(event.rawValue)"
+        )
+        switch event {
+        case .ready, .online:
+            isTwitchUnavailable = false
+            isTwitchBuffering = false
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            if !isPlaying {
+                streamStatus = "Ready · Twitch"
+            }
+        case .play:
+            isTwitchUnavailable = false
+            isTwitchBuffering = isPlaying
+            streamStatus = isPlaying ? "Twitch buffering…" : "Paused"
+        case .playing:
+            isTwitchUnavailable = false
+            isTwitchBuffering = false
+            isBuffering = false
+            streamStatus = "Playing on Twitch"
+            let sourceStableID = currentPreset.radio.source.stableID
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 550_000_000)
+                guard visualMode == .live,
+                      currentPreset.radio.source.stableID == sourceStableID
+                else { return }
+                markPrimaryVisualMediaReady()
+            }
+        case .pause, .ended:
+            isTwitchBuffering = false
+            if !isPlaying {
+                streamStatus = "Paused"
+            }
+        case .offline:
+            isTwitchBuffering = false
+            isTwitchUnavailable = true
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Twitch channel offline"
+        case .playbackBlocked:
+            isTwitchBuffering = false
+            isTwitchUnavailable = true
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Twitch playback blocked"
+            DiagnosticLog.appendPlayback(
+                "model.twitchPlaybackBlocked preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID)"
+            )
+        }
+    }
+
+    func handleBilibiliLivePlaybackEvent(_ event: BilibiliLivePlaybackEvent) {
+        guard currentPreset.radio.source.isBilibiliLive else { return }
+        DiagnosticLog.appendPlayback(
+            "model.bilibiliLiveEvent preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) event=\(event.logValue)"
+        )
+        switch event {
+        case .ready:
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+        case .live:
+            isBilibiliLiveUnavailable = false
+            isBilibiliLiveBuffering = isPlaying
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = isPlaying ? "Bilibili live buffering…" : "Ready · Bilibili"
+        case .playing, .mutedAutoplay:
+            isBilibiliLiveUnavailable = false
+            isBilibiliLiveBuffering = false
+            isBuffering = false
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Playing on Bilibili"
+        case .notAutoplay:
+            isBilibiliLiveUnavailable = false
+            isBilibiliLiveBuffering = false
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Bilibili playback blocked"
+        case .paused:
+            isBilibiliLiveBuffering = false
+            if !isPlaying {
+                streamStatus = "Paused"
+            }
+        case .offline:
+            isBilibiliLiveUnavailable = true
+            isBilibiliLiveBuffering = false
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Bilibili live offline"
+        case .replay:
+            isBilibiliLiveUnavailable = false
+            isBilibiliLiveBuffering = false
+            markEmbeddedVideoVisualReady(after: 250_000_000)
+            streamStatus = "Bilibili replay"
+        }
+    }
+
+    private func markEmbeddedVideoVisualReady(after delay: UInt64) {
+        let sourceStableID = currentPreset.radio.source.stableID
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay)
+            guard visualMode == .live,
+                  currentPreset.radio.source.stableID == sourceStableID
+            else { return }
+            markPrimaryVisualMediaReady()
         }
     }
 
@@ -2036,10 +2182,13 @@ final class AppModel: ObservableObject {
         DiagnosticLog.appendPlayback(
             "model.syncPlayback isPlaying=\(isPlaying) preset=\(currentPreset.id) source=\(currentPreset.radio.source.stableID) currentTrack=\"\(currentTrack?.title ?? "nil")\""
         )
-        if currentPreset.radio.source.isYouTube {
+        if currentPreset.radio.source.isEmbeddedVideo {
             cancelPlaybackRecovery()
             resetChillhopPlaybackState()
-            audioEngine.stop(reason: "youtube-station-active")
+            let stopReason =
+                currentPreset.radio.source.isYouTube ? "youtube-station-active" :
+                (currentPreset.radio.source.isTwitch ? "twitch-station-active" : "bilibili-live-station-active")
+            audioEngine.stop(reason: stopReason)
             refreshLiveTrackLoop()
             refreshPlaybackWatchdog()
             if currentTrack == nil {
@@ -2050,10 +2199,22 @@ final class AppModel: ObservableObject {
             isBuffering = false
             if !isPlaying {
                 isYouTubeBuffering = false
+                isTwitchBuffering = false
+                isBilibiliLiveBuffering = false
             }
-            streamStatus = isPlaying
-                ? (isYouTubeBuffering ? "YouTube buffering…" : "Playing on YouTube")
-                : "Paused"
+            if currentPreset.radio.source.isYouTube {
+                streamStatus = isPlaying
+                    ? (isYouTubeBuffering ? "YouTube buffering…" : "Playing on YouTube")
+                    : "Paused"
+            } else if currentPreset.radio.source.isTwitch {
+                streamStatus = isPlaying
+                    ? (isTwitchBuffering ? "Twitch buffering…" : "Playing on Twitch")
+                    : "Paused"
+            } else {
+                streamStatus = isPlaying
+                    ? (isBilibiliLiveBuffering ? "Bilibili live buffering…" : "Playing on Bilibili")
+                    : "Paused"
+            }
             return
         }
 
@@ -2088,7 +2249,7 @@ final class AppModel: ObservableObject {
     private func refreshLiveTrackLoop() {
         streamRefreshTimer?.invalidate()
         streamRefreshTimer = nil
-        guard isPlaying, !currentPreset.radio.source.isYouTube else { return }
+        guard isPlaying, !currentPreset.radio.source.isEmbeddedVideo else { return }
         streamRefreshTimer = Timer.scheduledTimer(withTimeInterval: 20, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.loadLiveTrack(replacingCurrentItem: false)
@@ -2102,7 +2263,7 @@ final class AppModel: ObservableObject {
         lastPlaybackWatchdogSample = nil
         stalledPlaybackWatchdogTicks = 0
 
-        guard isPlaying, !currentPreset.radio.source.isYouTube else { return }
+        guard isPlaying, !currentPreset.radio.source.isEmbeddedVideo else { return }
         playbackWatchdogTimer = Timer.scheduledTimer(withTimeInterval: Self.playbackWatchdogInterval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.evaluatePlaybackWatchdog()
@@ -2111,7 +2272,7 @@ final class AppModel: ObservableObject {
     }
 
     private func evaluatePlaybackWatchdog() {
-        guard !currentPreset.radio.source.isYouTube else {
+        guard !currentPreset.radio.source.isEmbeddedVideo else {
             lastPlaybackWatchdogSample = nil
             stalledPlaybackWatchdogTicks = 0
             isBuffering = false
@@ -2265,6 +2426,34 @@ final class AppModel: ObservableObject {
                     streamStatus = "Stream unavailable"
                 }
             }
+        case let .bilibiliLive(roomID):
+            resetChillhopPlaybackState(clearPreparedTrack: false)
+            audioEngine.stop(reason: "bilibili-live-station-loaded")
+            isBuffering = false
+            isBilibiliLiveBuffering = isPlaying
+            isBilibiliLiveUnavailable = false
+            let sourceStableID = currentPreset.radio.source.stableID
+            let streamURL = URL(string: "https://live.bilibili.com/\(roomID)")!
+            let trackID = Self.stableNegativeID(forEmbeddedVideoID: "bilibili-live:\(roomID)")
+            let streamTrack = LiveTrack.directStream(
+                id: trackID,
+                title: currentPreset.displayName,
+                artists: currentPreset.radio.providerName,
+                streamURL: streamURL
+            )
+            currentTrack = streamTrack
+            streamStatus = isPlaying ? "Playing on Bilibili" : "Ready · Bilibili"
+            DiagnosticLog.appendPlayback(
+                "model.loadTrack provider=bilibiliLive roomID=\(roomID) replacing=\(replacingCurrentItem) title=\"\(streamTrack.title)\""
+            )
+            markEmbeddedVideoVisualReady(after: 4_000_000_000)
+            if let metadata = await StationMetadataService.fetchBilibiliLive(roomID: roomID),
+               currentPreset.radio.source.stableID == sourceStableID {
+                currentTrack = metadata.liveTrack(id: trackID, streamURL: streamURL)
+                DiagnosticLog.appendPlayback(
+                    "model.loadTrackMetadata provider=bilibiliLive roomID=\(roomID) title=\"\(metadata.title)\" image=\"\(metadata.image?.absoluteString ?? "nil")\""
+                )
+            }
         case let .youtube(videoID):
             resetChillhopPlaybackState(clearPreparedTrack: false)
             audioEngine.stop(reason: "youtube-station-loaded")
@@ -2291,6 +2480,26 @@ final class AppModel: ObservableObject {
                     "model.loadTrackMetadata provider=youtube videoID=\(videoID) title=\"\(metadata.title)\" artists=\"\(metadata.artists)\""
                 )
             }
+        case let .twitch(channelName):
+            resetChillhopPlaybackState(clearPreparedTrack: false)
+            audioEngine.stop(reason: "twitch-station-loaded")
+            isBuffering = false
+            isTwitchBuffering = isPlaying
+            isTwitchUnavailable = false
+            let streamURL = URL(string: "https://www.twitch.tv/\(channelName)")!
+            let streamTrack = LiveTrack.directStream(
+                id: Self.stableNegativeID(forEmbeddedVideoID: "twitch:\(channelName)"),
+                title: currentPreset.displayName,
+                artists: currentPreset.radio.providerName,
+                streamURL: streamURL,
+                image: currentPreset.radio.source.twitchPreviewImageURL
+            )
+            currentTrack = streamTrack
+            streamStatus = isPlaying ? "Playing on Twitch" : "Ready · Twitch"
+            DiagnosticLog.appendPlayback(
+                "model.loadTrack provider=twitch channelName=\(channelName) replacing=\(replacingCurrentItem) title=\"\(streamTrack.title)\" image=\"\(streamTrack.image?.absoluteString ?? "nil")\""
+            )
+            markEmbeddedVideoVisualReady(after: 4_000_000_000)
         }
     }
 
@@ -2347,8 +2556,14 @@ final class AppModel: ObservableObject {
     }
 
     private func playCurrentTrack(replacingCurrentItem: Bool) {
-        guard !currentPreset.radio.source.isYouTube else {
-            streamStatus = isPlaying ? "Playing on YouTube" : "Ready · YouTube"
+        guard !currentPreset.radio.source.isEmbeddedVideo else {
+            if currentPreset.radio.source.isYouTube {
+                streamStatus = isPlaying ? "Playing on YouTube" : "Ready · YouTube"
+            } else if currentPreset.radio.source.isTwitch {
+                streamStatus = isPlaying ? "Playing on Twitch" : "Ready · Twitch"
+            } else {
+                streamStatus = isPlaying ? "Playing on Bilibili" : "Ready · Bilibili"
+            }
             return
         }
         guard let currentTrack else {
@@ -2530,7 +2745,7 @@ final class AppModel: ObservableObject {
     }
 
     private func schedulePlaybackRecovery(_ step: PlaybackRecoveryStep) {
-        guard !currentPreset.radio.source.isYouTube else {
+        guard !currentPreset.radio.source.isEmbeddedVideo else {
             cancelPlaybackRecovery()
             return
         }
@@ -2644,7 +2859,11 @@ final class AppModel: ObservableObject {
     }
 
     private static func stableNegativeID(forYouTubeVideoID videoID: String) -> Int {
-        let hash = videoID.unicodeScalars.reduce(0) { partial, scalar in
+        stableNegativeID(forEmbeddedVideoID: "youtube:\(videoID)")
+    }
+
+    private static func stableNegativeID(forEmbeddedVideoID value: String) -> Int {
+        let hash = value.unicodeScalars.reduce(0) { partial, scalar in
             (partial &* 31) &+ Int(scalar.value)
         }
         return -100_000 - abs(hash % 800_000)
