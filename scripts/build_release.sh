@@ -15,9 +15,6 @@ ICON_SRC="$ROOT/Sources/Lofii/Resources/AppIcon.icns"
 LOFII_RES="$ROOT/Sources/Lofii/Resources"
 METAL_SRC="$ROOT/Sources/Lofii/StageMetalShaders.metal"
 DMG_BACKGROUND="$ROOT/assets/dmg-background.png"
-DMG_DS_STORE="$ROOT/assets/dmg.DS_Store"
-DMG_APPLICATIONS_ALIAS="$ROOT/assets/Applications.alias"
-DMG_APPLICATIONS_ICON="/System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/ApplicationsFolderIcon.icns"
 
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
@@ -33,18 +30,6 @@ if [[ ! -d "$SPARKLE_FW" ]]; then
 fi
 if [[ ! -f "$DMG_BACKGROUND" ]]; then
   echo "error: missing DMG background at $DMG_BACKGROUND" >&2
-  exit 1
-fi
-if [[ ! -f "$DMG_DS_STORE" ]]; then
-  echo "error: missing DMG Finder layout at $DMG_DS_STORE" >&2
-  exit 1
-fi
-if [[ ! -f "$DMG_APPLICATIONS_ALIAS" ]]; then
-  echo "error: missing DMG Applications alias at $DMG_APPLICATIONS_ALIAS" >&2
-  exit 1
-fi
-if [[ ! -f "$DMG_APPLICATIONS_ICON" ]]; then
-  echo "error: missing macOS Applications folder icon at $DMG_APPLICATIONS_ICON" >&2
   exit 1
 fi
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
@@ -73,33 +58,36 @@ xattr -cr "$APP"
 "$ROOT/scripts/sign_built_app.sh" "$APP"
 
 mkdir -p "$ROOT/dist"
-DMG_ROOT="$STAGE/dmg-root"
-mkdir -p "$DMG_ROOT/.background"
-cp -R "$APP" "$DMG_ROOT/"
-cp "$DMG_BACKGROUND" "$DMG_ROOT/.background/background.png"
-cp "$DMG_DS_STORE" "$DMG_ROOT/.DS_Store"
-cp "$DMG_APPLICATIONS_ALIAS" "$DMG_ROOT/Applications"
-APPLICATIONS_ICON_COPY="$STAGE/ApplicationsFolderIcon.icns"
-APPLICATIONS_ICON_RSRC="$STAGE/ApplicationsFolderIcon.rsrc"
-cp "$DMG_APPLICATIONS_ICON" "$APPLICATIONS_ICON_COPY"
-sips -i "$APPLICATIONS_ICON_COPY" >/dev/null
-DeRez -only icns "$APPLICATIONS_ICON_COPY" >"$APPLICATIONS_ICON_RSRC"
-Rez -append "$APPLICATIONS_ICON_RSRC" -o "$DMG_ROOT/Applications"
-SetFile -a C "$DMG_ROOT/Applications"
-find "$DMG_ROOT" -name '._*' -delete
-xattr -cr "$DMG_ROOT/lofii.app"
-chflags hidden "$DMG_ROOT/.background"
-
-VOLNAME="lofii"
 DMG="$ROOT/dist/lofii-${VERSION}-macos.dmg"
 rm -f "$DMG"
-hdiutil create \
-  -volname "$VOLNAME" \
-  -srcfolder "$DMG_ROOT" \
-  -ov \
-  -fs HFS+ \
-  -format UDZO \
-  -imagekey zlib-level=9 \
-  "$DMG" >/dev/null
+
+DMG_BACKGROUND_COPY="$STAGE/dmg-background.png"
+DMG_BACKGROUND_RETINA_COPY="$STAGE/dmg-background@2x.png"
+sips -z 373 661 "$DMG_BACKGROUND" --out "$DMG_BACKGROUND_COPY" >/dev/null
+sips -z 746 1322 "$DMG_BACKGROUND" --out "$DMG_BACKGROUND_RETINA_COPY" >/dev/null
+sips -s dpiWidth 72 -s dpiHeight 72 "$DMG_BACKGROUND_COPY" >/dev/null
+sips -s dpiWidth 144 -s dpiHeight 144 "$DMG_BACKGROUND_RETINA_COPY" >/dev/null
+
+APPDMG_JSON="$STAGE/appdmg.json"
+cat >"$APPDMG_JSON" <<EOF
+{
+  "title": "lofii",
+  "icon": "$ICON_SRC",
+  "background": "$DMG_BACKGROUND_COPY",
+  "icon-size": 80,
+  "window": {
+    "position": { "x": 120, "y": 559 },
+    "size": { "width": 661, "height": 379 }
+  },
+  "format": "UDZO",
+  "filesystem": "HFS+",
+  "contents": [
+    { "x": 180, "y": 197, "type": "file", "path": "$APP" },
+    { "x": 480, "y": 197, "type": "link", "path": "/Applications" }
+  ]
+}
+EOF
+
+npx --yes "appdmg@${APPDMG_VERSION:-0.6.6}" "$APPDMG_JSON" "$DMG"
 
 echo "Built $DMG"

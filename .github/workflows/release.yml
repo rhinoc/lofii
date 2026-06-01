@@ -26,6 +26,10 @@ jobs:
           # macOS 26 image ships Xcode 26.4 (stable) + 26.5 beta; pin stable for reproducible builds.
           xcode-version: "26.4"
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install Live2D Cubism Core
         env:
           CUBISM_NATIVE_SDK_URL: ${{ vars.CUBISM_NATIVE_SDK_URL }}
