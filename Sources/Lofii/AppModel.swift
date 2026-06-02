@@ -720,7 +720,7 @@ struct BongoStagePlacement: Codable, Equatable, Sendable {
     var anchor: BongoStageAnchor
     var customOriginRatio: BongoStageOriginRatio?
 
-    static let `default` = BongoStagePlacement(anchor: .bottom, customOriginRatio: nil)
+    static let `default` = BongoStagePlacement(anchor: .bottomLeading, customOriginRatio: nil)
 }
 
 /// User scale for the Bongo Live2D stage (logical points cap before fitting).
@@ -1160,6 +1160,7 @@ final class AppModel: ObservableObject {
     private static let currentVisualMediaIDKey = "lofii.currentVisualMediaID"
     private static let selectedPresetIDKey = "lofii.selectedPresetID"
     private static let alwaysOnTopKey = "lofii.alwaysOnTop"
+    private static let defaultCurrentVisualMediaID = "builtin-gif:xUOwGcu6wd0cXBj5n2"
 
     private static func loadBadgeSize() -> BadgeSize {
         guard let raw = UserDefaults.standard.string(forKey: badgeSizeKey),
@@ -1178,7 +1179,7 @@ final class AppModel: ObservableObject {
     private static func loadBadgePosition() -> BadgePosition {
         guard let raw = UserDefaults.standard.string(forKey: badgePositionKey),
               let value = BadgePosition(rawValue: raw)
-        else { return .topLeading }
+        else { return .topTrailing }
         return value
     }
 
@@ -1212,14 +1213,14 @@ final class AppModel: ObservableObject {
 
     private static func loadVisualMode() -> VisualMode {
         guard let raw = UserDefaults.standard.string(forKey: visualModeKey) else {
-            return .scene
+            return .media
         }
-        return VisualMode(rawValue: raw) ?? .scene
+        return VisualMode(rawValue: raw) ?? .media
     }
 
     private static func loadBongoOverlayVisible() -> Bool {
         if UserDefaults.standard.object(forKey: bongoOverlayVisibleKey) == nil {
-            return true
+            return false
         }
         return UserDefaults.standard.bool(forKey: bongoOverlayVisibleKey)
     }
@@ -1231,7 +1232,7 @@ final class AppModel: ObservableObject {
     private static func loadBongoDesktopMaskTint() -> BongoDesktopMaskTint {
         guard let raw = UserDefaults.standard.string(forKey: bongoDesktopMaskTintKey),
               let value = BongoDesktopMaskTint(rawValue: raw)
-        else { return .hidden }
+        else { return .dynamic }
         return value
     }
 
@@ -1262,7 +1263,7 @@ final class AppModel: ObservableObject {
     private static func loadBongoStageAnchor() -> BongoStageAnchor {
         guard let raw = UserDefaults.standard.string(forKey: bongoStageAnchorKey),
               let value = BongoStageAnchor(rawValue: raw)
-        else { return .bottom }
+        else { return .bottomLeading }
         return value
     }
 
@@ -1302,7 +1303,7 @@ final class AppModel: ObservableObject {
     }
 
     private static func loadCurrentVisualMediaID() -> String? {
-        UserDefaults.standard.string(forKey: currentVisualMediaIDKey)
+        UserDefaults.standard.string(forKey: currentVisualMediaIDKey) ?? defaultCurrentVisualMediaID
     }
 
     private static func loadCurrentSceneID() -> String? {
@@ -2157,7 +2158,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleBongoDesktopMask() {
-        bongoDesktopMaskTint = isBongoDesktopMaskEnabled ? .hidden : .modelDynamic
+        bongoDesktopMaskTint = isBongoDesktopMaskEnabled ? .hidden : .dynamic
     }
 
     func nextVisualMedia() {

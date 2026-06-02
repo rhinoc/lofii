@@ -3260,7 +3260,7 @@ private struct SettingsOverlay: View {
                 isOn: binding(
                     get: { model.isBongoDesktopMaskEnabled },
                     set: { enabled in
-                        model.bongoDesktopMaskTint = enabled ? .modelDynamic : .hidden
+                        model.bongoDesktopMaskTint = enabled ? .dynamic : .hidden
                     }
                 ),
                 accent: model.accent,
