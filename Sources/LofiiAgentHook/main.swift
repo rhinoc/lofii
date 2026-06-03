@@ -97,6 +97,18 @@ private func sendAll(_ sock: Int32, data: Data) {
     }
 }
 
+private func receiveAll(_ sock: Int32) {
+    var buffer = [UInt8](repeating: 0, count: 4096)
+    while true {
+        let count = recv(sock, &buffer, buffer.count, 0)
+        if count < 0 {
+            if errno == EINTR { continue }
+            return
+        }
+        if count == 0 { return }
+    }
+}
+
 private func redirectStandardIOToDevNull() {
     let devNull = open("/dev/null", O_RDWR)
     guard devNull >= 0 else {
@@ -133,8 +145,11 @@ private func deliver(_ data: Data) {
 
     var sendTimeout = timeval(tv_sec: 1, tv_usec: 0)
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+    var receiveTimeout = timeval(tv_sec: 1, tv_usec: 0)
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
     sendAll(sock, data: data)
     shutdown(sock, SHUT_WR)
+    receiveAll(sock)
     close(sock)
 }
 
