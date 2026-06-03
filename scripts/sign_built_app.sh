@@ -21,6 +21,9 @@ sign_parts() {
     codesign --force --deep "$@" --sign "$id" "$APP/Contents/Frameworks/Sparkle.framework"
   fi
   codesign --force "$@" --sign "$id" "$APP/Contents/Frameworks/libLive2DCubismCore.dylib"
+  if [[ -f "$APP/Contents/MacOS/lofii-agent-hook" ]]; then
+    codesign --force "$@" --sign "$id" "$APP/Contents/MacOS/lofii-agent-hook"
+  fi
   codesign --force "$@" --sign "$id" "$APP/Contents/MacOS/lofii"
   codesign --force "$@" --sign "$id" "$APP"
 }

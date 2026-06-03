@@ -8,6 +8,7 @@ import Sparkle
 @main
 struct LofiiApp: App {
     @StateObject private var model = AppModel()
+    @StateObject private var agentCompanion = AgentCompanionModel(visualUpdateThrottle: 0.45)
     @StateObject private var menuDebugRevealMonitor = MenuDebugRevealMonitor()
     @StateObject private var loginItemController = LoginItemController()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -37,8 +38,10 @@ struct LofiiApp: App {
         WindowGroup(id: "lofii-widget") {
             WidgetRootView()
                 .environmentObject(model)
+                .environmentObject(agentCompanion)
                 .onAppear {
                     AppCommandBridge.install(model: model)
+                    agentCompanion.startAgentHookServer()
                 }
                 // Without this, SwiftUI keeps a ~28px top safe-area inset for
                 // the (hidden) titlebar, leaving an empty transparent strip
@@ -447,9 +450,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // `NSWindow.didChangeOcclusionState` often fires during native fullscreen
         // space transitions with **no** `.visible` bit even though the window is
-        // still on-screen. `AppModel.shouldRenderStageMotion` pauses `MTKView` and passes **deltaTime 0**
-        // into Live2D — so Bongo appears **frozen** for the whole fullscreen until
-        // occlusion flips back after exit.
+        // still on-screen. AppModel's render gates pause MTKView-driven work while hidden,
+        // so Bongo appears frozen for the whole fullscreen until occlusion flips back after exit.
         if isFullscreenTransitioning {
             AppCommandState.model?.setWidgetWindowVisible(true)
             return

@@ -1014,9 +1014,13 @@ final class AppModel: ObservableObject {
     /// animated overlays pause to reduce CPU/GPU usage.
     @Published private(set) var isWidgetVisible = true
 
-    /// Single gate for MTK-backed stages and media decode: pauses when transport is stopped
-    /// or the widget is off-screen (`isWidgetVisible` false).
+    /// Single gate for non-Bongo MTK-backed stages and media decode: pauses when transport is
+    /// stopped or the widget is off-screen (`isWidgetVisible` false).
     var shouldRenderStageMotion: Bool { isPlaying && isWidgetVisible }
+
+    /// Bongo is an input companion, not transport artwork. Keep its Live2D stage moving while
+    /// music is paused, but still pause it when the widget is hidden/off-screen.
+    var shouldRenderBongoMotion: Bool { isWidgetVisible }
 
     // MARK: Display preferences (right-click menu)
     //

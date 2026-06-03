@@ -110,6 +110,15 @@ SOFTWARE.
   Halfmann, licensed under MIT. The bundled license text is in
   `Sources/Lofii/Resources/Fonts/PixelartIcons-LICENSE.txt`.
 
+## Agent Companion Assets
+
+- Bubble frame assets for Agent Companion are adapted from
+  [Lil Noun Asset Library](https://www.figma.com/community/file/1117824291358512052/lil-noun-asset-library)
+  on Figma Community.
+- Pixel emoji assets for Agent Companion are adapted from
+  [Pixel Emojis Set](https://www.figma.com/community/file/1409109157690697774/pixel-emojis-set?q_id=e2094a84-e8a4-4325-9542-986ac7596aae)
+  on Figma Community.
+
 ## Live2D / Cubism
 
 - Live2D Cubism Framework source files are Copyright Live2D Inc. and governed

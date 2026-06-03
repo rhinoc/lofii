@@ -7,7 +7,9 @@ VERSION="$(tr -d '[:space:]' <VERSION)"
 
 scripts/install_cubism_core.sh --check
 swift build -c release --product lofii
+swift build -c release --product lofii-agent-hook
 BIN="$(swift build -c release --show-bin-path)/lofii"
+AGENT_HOOK_BIN="$(swift build -c release --show-bin-path)/lofii-agent-hook"
 SPARKLE_FW="$(dirname "$BIN")/Sparkle.framework"
 DYLIB_SRC="$ROOT/Vendor/CubismNativeSDK/Core/dll/macos/libLive2DCubismCore.dylib"
 PLIST_SRC="$ROOT/Sources/Lofii/Info.plist"
@@ -23,6 +25,7 @@ APP="$STAGE/lofii.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$PLIST_SRC" "$APP/Contents/Info.plist"
 cp "$BIN" "$APP/Contents/MacOS/lofii"
+cp "$AGENT_HOOK_BIN" "$APP/Contents/MacOS/lofii-agent-hook"
 cp "$DYLIB_SRC" "$APP/Contents/Frameworks/libLive2DCubismCore.dylib"
 if [[ ! -d "$SPARKLE_FW" ]]; then
   echo "error: Sparkle.framework not found next to release binary (expected: $SPARKLE_FW)" >&2
@@ -35,7 +38,7 @@ fi
 cp -R "$SPARKLE_FW" "$APP/Contents/Frameworks/"
 # Ship the same resource layout as SwiftPM's `lofii_lofii.bundle`, but under `Contents/Resources/`
 # so `LofiiResources.bundle` resolves to `Bundle.main` and codesign does not require an extra bundle at .app root.
-for name in Statics Fonts BongoCat ShatteredGlass FrameworkMetallibs; do
+for name in Statics Fonts BongoCat AgentCompanion ShatteredGlass FrameworkMetallibs; do
   if [[ ! -d "$LOFII_RES/$name" ]]; then
     echo "error: missing $LOFII_RES/$name" >&2
     exit 1

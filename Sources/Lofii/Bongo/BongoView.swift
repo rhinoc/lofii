@@ -47,6 +47,7 @@ struct BongoView: View {
 
 private struct BongoUnifiedStage: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var agentCompanion: AgentCompanionModel
     @StateObject private var coordinator: BongoCoordinator
     let isPlaying: Bool
     let rendersVisualBackground: Bool
@@ -231,6 +232,10 @@ private struct BongoUnifiedStage: View {
                         backgroundDarkFieldOpacity: model.visualMode == .live ? darkFieldOpacity : 0,
                         desktopTint: model.bongoDesktopMaskTint,
                         pressedKeyImages: coordinator.pressedKeyImages,
+                        agentCompanionBubbles: agentCompanion.bubbles,
+                        agentCompanionBubblePosition: agentCompanion.bubblePosition,
+                        agentCompanionEmojiSize: model.bongoStageScaleTier.agentCompanionEmojiSize,
+                        agentCompanionBubbleFlipped: agentCompanion.bubbleFlipped,
                         artworkScrollWheel: artworkScrollWheel,
                         artworkContextMenu: artworkContextMenu,
                         crt: model.crt,
@@ -782,6 +787,253 @@ private final class BongoStageMTKView: MTKView {
     }
 }
 
+private struct AgentCompanionBubbleStack: View {
+    let bubbles: [AgentCompanionBubble]
+    let position: AgentCompanionBubblePosition
+    let stageScaleTier: BongoStageScaleTier
+    let containerSize: CGSize
+    let maxStageSize: CGSize
+    let placement: BongoStagePlacement
+    let edgeInset: CGFloat
+    let maxFittedStageHeightFraction: CGFloat
+
+    private var anchor: CGPoint? {
+        guard containerSize.width > 0, containerSize.height > 0 else { return nil }
+        let stage = BongoStageLayout.fittedStageSize(
+            in: containerSize,
+            maxStageSize: maxStageSize,
+            maxFittedStageHeightFractionOfContainer: maxFittedStageHeightFraction
+        )
+        guard stage.width > 0, stage.height > 0 else { return nil }
+        let origin = BongoStageLayout.stageOrigin(
+            in: containerSize,
+            stage: stage,
+            placement: placement,
+            edgeInset: edgeInset
+        )
+        let proposed: CGPoint
+        let inset = max(bubbleFrameSize.width, bubbleFrameSize.height) * 0.5
+        switch position {
+        case .topRight:
+            proposed = CGPoint(x: origin.x + stage.width - inset * 0.35, y: origin.y + inset * 0.35)
+        case .topLeft:
+            proposed = CGPoint(x: origin.x + inset * 0.35, y: origin.y + inset * 0.35)
+        case .above:
+            proposed = CGPoint(x: origin.x + stage.width * 0.5, y: origin.y - inset * 0.15)
+        case .right:
+            proposed = CGPoint(x: origin.x + stage.width + inset * 0.35, y: origin.y + stage.height * 0.28)
+        }
+
+        return CGPoint(
+            x: min(max(proposed.x, inset), max(containerSize.width - inset, inset)),
+            y: min(max(proposed.y, inset), max(containerSize.height - inset, inset))
+        )
+    }
+
+    private var bubbleSize: CGFloat {
+        stageScaleTier.agentCompanionEmojiSize
+    }
+
+    private var bubbleFrameSize: CGSize {
+        AgentCompanionBubbleView.frameSize(for: bubbleSize)
+    }
+
+    private var stackAlignment: HorizontalAlignment {
+        switch position {
+        case .topLeft:
+            return .leading
+        case .topRight, .above, .right:
+            return .trailing
+        }
+    }
+
+    private func xOffset(for index: Int) -> CGFloat {
+        let amount = CGFloat(index) * bubbleFrameSize.width * 0.12
+        switch position {
+        case .topLeft:
+            return amount
+        case .topRight, .above, .right:
+            return -amount
+        }
+    }
+
+    var body: some View {
+        if !bubbles.isEmpty, let anchor {
+            VStack(alignment: stackAlignment, spacing: -bubbleFrameSize.height * 0.36) {
+                ForEach(Array(bubbles.enumerated()), id: \.element.id) { index, bubble in
+                    AgentCompanionBubbleView(bubble: bubble, size: bubbleSize)
+                        .zIndex(Double(bubbles.count - index))
+                        .offset(x: xOffset(for: index))
+                }
+            }
+            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: bubbles)
+            .transition(.opacity.combined(with: .scale(scale: 0.92)))
+            .position(anchor)
+        }
+    }
+}
+
+private struct AgentCompanionBubbleView: View {
+    let bubble: AgentCompanionBubble
+    let size: CGFloat
+
+    @State private var appeared = false
+    @State private var motionPhase = false
+
+    var body: some View {
+        ZStack {
+            bubbleBackground
+                .frame(width: bubbleFrameSize.width, height: bubbleFrameSize.height)
+
+            icon
+                .frame(width: size, height: size)
+                .offset(y: -bubbleFrameSize.height * 0.08)
+        }
+            .frame(width: bubbleFrameSize.width, height: bubbleFrameSize.height)
+            .shadow(color: Color.black.opacity(0.36), radius: max(2, size * 0.10), x: 0, y: max(1, size * 0.05))
+            .scaleEffect(appeared ? motionScale : 0.42)
+            .opacity(appeared ? motionOpacity : 0)
+            .rotationEffect(.degrees(motionPhase ? motion.rotationDegrees : -motion.rotationDegrees))
+            .offset(
+                x: appeared ? (motionPhase ? motion.x : -motion.x) : 0,
+                y: appeared ? (motionPhase ? motion.y : -motion.y) : size * 0.24
+            )
+            .onAppear(perform: startMotion)
+            .id("\(bubble.id)-\(bubble.assetName)")
+    }
+
+    static func frameSize(for emojiSize: CGFloat) -> CGSize {
+        AgentCompanionBubbleMetrics.frameSize(for: emojiSize)
+    }
+
+    private var bubbleFrameSize: CGSize {
+        Self.frameSize(for: size)
+    }
+
+    private var motionScale: CGFloat {
+        let waitingScale: CGFloat = bubble.state == .waiting ? 1.06 : 1
+        let breathingScale: CGFloat = motionPhase ? 1.025 : 0.985
+        return waitingScale * breathingScale
+    }
+
+    private var motionOpacity: Double {
+        motionPhase ? 0.94 : 1
+    }
+
+    private var motion: BubbleMotion {
+        BubbleMotion(seed: "\(bubble.id):\(bubble.assetName)", size: size)
+    }
+
+    private var bubbleStyle: AgentCompanionBubbleStyle {
+        AgentCompanionBubbleStyle.random(for: "\(bubble.id):\(bubble.assetName)")
+    }
+
+    private func startMotion() {
+        appeared = false
+        motionPhase = false
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.68, blendDuration: 0.05)) {
+            appeared = true
+        }
+        withAnimation(.easeInOut(duration: motion.duration).repeatForever(autoreverses: true)) {
+            motionPhase = true
+        }
+    }
+
+    @ViewBuilder
+    private var bubbleBackground: some View {
+        if let image = Self.image(named: bubbleStyle.resourceName, withExtension: "svg") {
+            Image(nsImage: image)
+                .interpolation(.none)
+                .resizable()
+                .renderingMode(.original)
+                .accessibilityHidden(true)
+        }
+    }
+
+    @ViewBuilder
+    private var icon: some View {
+        if let image = Self.image(named: bubble.assetName, withExtension: "png") {
+            Image(nsImage: image)
+                .interpolation(.none)
+                .resizable()
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else {
+            Text(bubble.fallbackIcon)
+                .font(.system(size: size))
+        }
+    }
+
+    private static func image(named name: String, withExtension fileExtension: String) -> NSImage? {
+        guard let url = LofiiResources.url(
+            forResource: name,
+            withExtension: fileExtension,
+            subdirectory: "AgentCompanion"
+        ) else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }
+
+}
+
+private enum AgentCompanionBubbleMetrics {
+    static func frameSize(for emojiSize: CGFloat) -> CGSize {
+        CGSize(width: emojiSize * 2.2, height: emojiSize * 1.9)
+    }
+}
+
+private enum AgentCompanionBubbleStyle: String, CaseIterable {
+    case speech = "agent-bubble-speech-short"
+    case thought = "agent-bubble-thought-short"
+    case noise = "agent-bubble-noise-short"
+
+    var resourceName: String { rawValue }
+
+    static func random(for seed: String) -> AgentCompanionBubbleStyle {
+        let styles = allCases
+        let index = Int(AgentCompanionStableHash.value(for: seed) % UInt32(styles.count))
+        return styles[index]
+    }
+}
+
+private struct BubbleMotion {
+    let x: CGFloat
+    let y: CGFloat
+    let rotationDegrees: Double
+    let duration: Double
+
+    init(seed: String, size: CGFloat) {
+        let value = AgentCompanionStableHash.value(for: seed)
+        let xSign: CGFloat = value & 1 == 0 ? 1 : -1
+        let ySign: CGFloat = value & 2 == 0 ? 1 : -1
+        let xMagnitude = 0.018 + CGFloat(value % 5) * 0.004
+        let yMagnitude = 0.020 + CGFloat((value >> 3) % 6) * 0.004
+        x = xSign * size * xMagnitude
+        y = ySign * size * yMagnitude
+        rotationDegrees = 1.2 + Double((value >> 7) % 18) / 10
+        duration = 1.15 + Double((value >> 11) % 70) / 100
+    }
+}
+
+private enum AgentCompanionStableHash {
+    static func value(for seed: String) -> UInt32 {
+        seed.unicodeScalars.reduce(UInt32(2_166_136_261)) { hash, scalar in
+            (hash ^ scalar.value) &* 16_777_619
+        }
+    }
+}
+
+private extension BongoStageScaleTier {
+    var agentCompanionEmojiSize: CGFloat {
+        switch self {
+        case .small: return 24
+        case .medium: return 32
+        case .large: return 40
+        }
+    }
+}
+
 private struct BongoUnifiedMetalView: NSViewRepresentable {
     let background: StageMetalSource?
     let rendersVisualBackground: Bool
@@ -799,6 +1051,10 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
     let backgroundDarkFieldOpacity: Double
     let desktopTint: BongoDesktopMaskTint
     let pressedKeyImages: Set<String>
+    let agentCompanionBubbles: [AgentCompanionBubble]
+    let agentCompanionBubblePosition: AgentCompanionBubblePosition
+    let agentCompanionEmojiSize: CGFloat
+    let agentCompanionBubbleFlipped: Bool
     let artworkScrollWheel: ((Double) -> Void)?
     let artworkContextMenu: (() -> NSMenu)?
     let crt: CRTSettings
@@ -862,6 +1118,10 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
             backgroundDarkFieldOpacity: backgroundDarkFieldOpacity,
             desktopTint: desktopTint,
             pressedKeyImages: pressedKeyImages,
+            agentCompanionBubbles: agentCompanionBubbles,
+            agentCompanionBubblePosition: agentCompanionBubblePosition,
+            agentCompanionEmojiSize: agentCompanionEmojiSize,
+            agentCompanionBubbleFlipped: agentCompanionBubbleFlipped,
             artworkScrollWheel: artworkScrollWheel,
             artworkContextMenu: artworkContextMenu,
             crt: crt,
@@ -929,6 +1189,14 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         var rightY: Float = 0
     }
 
+    private struct AgentCompanionPresentation {
+        let key: String
+        let bubble: AgentCompanionBubble
+        let index: Int
+    }
+
+    private static let agentCompanionExitDuration: CFTimeInterval = 0.28
+
     private let bongoCoordinator: BongoCoordinator
     /// Latest handler from SwiftUI (`BongoUnifiedMetalView.onLive2DWorkspaceReady`); set in `update` before `attach`.
     private var onLive2DWorkspaceReady: () -> Void = {}
@@ -953,6 +1221,15 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private var stagePlacement: BongoStagePlacement = .default
     private var desktopTint: BongoDesktopMaskTint = .black
     private var pressedKeyImages: Set<String> = []
+    private var agentCompanionBubbles: [AgentCompanionBubble] = []
+    private var agentCompanionBubblePosition: AgentCompanionBubblePosition = .topRight
+    private var agentCompanionEmojiSize: CGFloat = 32
+    private var agentCompanionBubbleFlipped = false
+    private var agentCompanionTextures: [String: MTLTexture] = [:]
+    private var agentCompanionFirstSeen: [String: CFTimeInterval] = [:]
+    private var agentCompanionExitStarted: [String: CFTimeInterval] = [:]
+    private var agentCompanionSnapshotBubbles: [String: AgentCompanionBubble] = [:]
+    private var agentCompanionLastIndices: [String: Int] = [:]
     private var crtSettings: CRTSettings = CRTSettings()
     private var curvationFactor: Double = 0
     private var curvationOverscan: Double = 1
@@ -1025,6 +1302,14 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         activeDragStagePlacement ?? stagePlacement
     }
 
+    private var hasVisibleAgentCompanionBubbles: Bool {
+        !agentCompanionBubbles.isEmpty || !agentCompanionExitStarted.isEmpty
+    }
+
+    private var shouldRunDrawLoop: Bool {
+        isPlaying || needsVideoFirstFramePreroll || hasVisibleAgentCompanionBubbles || isDraggingStage
+    }
+
     init(bongoCoordinator: BongoCoordinator) {
         self.bongoCoordinator = bongoCoordinator
     }
@@ -1071,6 +1356,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         backgroundDarkFieldOpacity: Double,
         desktopTint: BongoDesktopMaskTint,
         pressedKeyImages: Set<String>,
+        agentCompanionBubbles: [AgentCompanionBubble],
+        agentCompanionBubblePosition: AgentCompanionBubblePosition,
+        agentCompanionEmojiSize: CGFloat,
+        agentCompanionBubbleFlipped: Bool,
         artworkScrollWheel: ((Double) -> Void)?,
         artworkContextMenu: (() -> NSMenu)?,
         crt: CRTSettings,
@@ -1099,6 +1388,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         let backgroundChanged = self.backgroundSource != background
         let visualBackgroundChanged = self.rendersVisualBackground != rendersVisualBackground
         let playbackChanged = self.isPlaying != isPlaying
+        let agentCompanionChanged = self.agentCompanionBubbles != agentCompanionBubbles ||
+            self.agentCompanionBubblePosition != agentCompanionBubblePosition ||
+            self.agentCompanionEmojiSize != agentCompanionEmojiSize ||
+            self.agentCompanionBubbleFlipped != agentCompanionBubbleFlipped
         let cappedFPS = StageMetalMTKRuntime.clampedPreferredFramesPerSecond(renderFramesPerSecond)
         let renderRateChanged = self.renderFramesPerSecond != cappedFPS
         let backgroundTransitionChanged =
@@ -1144,12 +1437,6 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             modelDesktopColorPack = pack
             modelDesktopColorReloadToken = bongoPackReloadToken
         }
-        if backgroundChanged || playbackChanged {
-            StageMetalMTKRuntime.syncDrawLoopToPlayback(
-                view: view,
-                isPlaying: isPlaying || needsVideoFirstFramePreroll
-            )
-        }
         self.pack = pack
         self.maxLogicalStageSize = maxLogicalStageSize
         self.stagePlacement = stagePlacement
@@ -1158,6 +1445,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         }
         self.desktopTint = desktopTint
         self.pressedKeyImages = pressedKeyImages
+        self.agentCompanionBubbles = agentCompanionBubbles
+        self.agentCompanionBubblePosition = agentCompanionBubblePosition
+        self.agentCompanionEmojiSize = agentCompanionEmojiSize
+        self.agentCompanionBubbleFlipped = agentCompanionBubbleFlipped
+        reconcileAgentCompanionAnimationState(now: CACurrentMediaTime())
         self.crtSettings = crt
         if let stageView = view as? BongoStageMTKView {
             stageView.artworkScrollWheel = artworkScrollWheel
@@ -1197,6 +1489,9 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         self.maxFittedStageHeightFraction = maxFittedStageHeightFraction
         self.layoutContainerSize = layoutContainerSize
         applyPlaybackStateForVideo()
+        if backgroundChanged || playbackChanged || agentCompanionChanged || view?.isPaused != !shouldRunDrawLoop {
+            syncDrawLoopToCurrentIntent()
+        }
         if backgroundTransitionChanged, !isPlaying {
             view?.draw()
         }
@@ -1238,6 +1533,11 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         nativeRendererSize = .zero
         bongoBackgroundTexture = nil
         keyTextures.removeAll()
+        agentCompanionTextures.removeAll()
+        agentCompanionFirstSeen.removeAll()
+        agentCompanionExitStarted.removeAll()
+        agentCompanionSnapshotBubbles.removeAll()
+        agentCompanionLastIndices.removeAll()
         backgroundSource = nil
     }
 
@@ -1327,10 +1627,20 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             pendingDragCommitRatio = nil
             isDraggingStage = false
             view?.preferredFramesPerSecond = renderFramesPerSecond
-            StageMetalMTKRuntime.syncDrawLoopToPlayback(view: view, isPlaying: isPlaying)
+            syncDrawLoopToCurrentIntent(drawWhenPaused: true)
         }
         guard let ratio = pendingDragCommitRatio else { return }
         onStagePlacementRatioChanged(ratio)
+    }
+
+    private func syncDrawLoopToCurrentIntent(drawWhenPaused: Bool = true) {
+        if drawWhenPaused {
+            StageMetalMTKRuntime.syncDrawLoopToPlayback(view: view, isPlaying: shouldRunDrawLoop)
+            return
+        }
+
+        view?.isPaused = !shouldRunDrawLoop
+        view?.enableSetNeedsDisplay = !shouldRunDrawLoop
     }
 
     func draw(in view: MTKView) {
@@ -1381,6 +1691,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         )
         drawBongoModel(commandBuffer: commandBuffer, target: offscreenTexture, viewportSize: viewportSize, view: view)
         drawPressedKeys(commandBuffer: commandBuffer, target: offscreenTexture, viewportSize: viewportSize)
+        drawAgentCompanionBubbles(commandBuffer: commandBuffer, target: offscreenTexture, viewportSize: viewportSize)
 
         guard let descriptor = view.currentRenderPassDescriptor else { return }
         drawFinalStage(
@@ -1649,6 +1960,220 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         encoder.endEncoding()
     }
 
+    private func drawAgentCompanionBubbles(commandBuffer: MTLCommandBuffer, target: MTLTexture, viewportSize: CGSize) {
+        let now = CACurrentMediaTime()
+        reconcileAgentCompanionAnimationState(now: now)
+        let presentations = agentCompanionPresentations()
+        if presentations.isEmpty {
+            syncDrawLoopToCurrentIntent(drawWhenPaused: false)
+            return
+        }
+        guard
+            let quadPipelineState,
+            let encoder = makeLoadEncoder(commandBuffer: commandBuffer, target: target)
+        else { return }
+
+        encoder.setRenderPipelineState(quadPipelineState)
+        for presentation in presentations.sorted(by: { $0.index > $1.index }) {
+            guard let drawState = agentCompanionDrawState(
+                for: presentation.bubble,
+                key: presentation.key,
+                index: presentation.index,
+                now: now,
+                viewportSize: viewportSize
+            ),
+                  let texture = agentCompanionTexture(for: presentation.bubble, frameSize: drawState.frameSize)
+            else { continue }
+            drawTextureQuad(
+                texture: texture,
+                rect: drawState.rect,
+                encoder: encoder,
+                viewportSize: viewportSize,
+                opacity: drawState.opacity
+            )
+        }
+        encoder.endEncoding()
+    }
+
+    private func agentCompanionDrawState(
+        for bubble: AgentCompanionBubble,
+        key: String,
+        index: Int,
+        now: CFTimeInterval,
+        viewportSize: CGSize
+    ) -> (rect: CGRect, frameSize: CGSize, opacity: Float)? {
+        guard let view, let layout = stageLayout(in: view) else { return nil }
+        let scaleX = viewportSize.width / max(layout.container.width, 1)
+        let scaleY = viewportSize.height / max(layout.container.height, 1)
+        let emojiSize = max(agentCompanionEmojiSize, 1)
+        let framePoints = AgentCompanionBubbleMetrics.frameSize(for: emojiSize)
+        let frameSize = CGSize(
+            width: max(1, (framePoints.width * scaleX).rounded()),
+            height: max(1, (framePoints.height * scaleY).rounded())
+        )
+        let anchor = agentCompanionAnchor(
+            layout: layout,
+            frameSize: framePoints
+        )
+        let stackXOffset = agentCompanionStackXOffset(for: index, frameWidth: framePoints.width)
+        let stackYOffset = -CGFloat(index) * framePoints.height * 0.36
+        let animation = agentCompanionAnimation(for: bubble, key: key, now: now, size: framePoints.width)
+        let center = CGPoint(
+            x: anchor.x + stackXOffset + animation.x,
+            y: anchor.y + stackYOffset + animation.y + animation.entryYOffset
+        )
+        let scaledFramePoints = CGSize(
+            width: framePoints.width * animation.scale,
+            height: framePoints.height * animation.scale
+        )
+        let scaledFrameSize = CGSize(
+            width: max(1, (scaledFramePoints.width * scaleX).rounded()),
+            height: max(1, (scaledFramePoints.height * scaleY).rounded())
+        )
+        let originPoints = CGPoint(
+            x: center.x - scaledFramePoints.width * 0.5,
+            y: center.y - scaledFramePoints.height * 0.5
+        )
+        return (
+            CGRect(
+                x: originPoints.x * scaleX,
+                y: originPoints.y * scaleY,
+                width: scaledFrameSize.width,
+                height: scaledFrameSize.height
+            ),
+            frameSize,
+            animation.opacity
+        )
+    }
+
+    private func agentCompanionAnchor(
+        layout: (container: CGSize, stage: CGSize, origin: CGPoint),
+        frameSize: CGSize
+    ) -> CGPoint {
+        let inset = max(frameSize.width, frameSize.height) * 0.5
+        let proposed: CGPoint
+        switch agentCompanionBubblePosition {
+        case .topRight:
+            proposed = CGPoint(x: layout.origin.x + layout.stage.width - inset * 0.35, y: layout.origin.y + inset * 0.35)
+        case .topLeft:
+            proposed = CGPoint(x: layout.origin.x + inset * 0.35, y: layout.origin.y + inset * 0.35)
+        case .above:
+            proposed = CGPoint(x: layout.origin.x + layout.stage.width * 0.5, y: layout.origin.y - inset * 0.15)
+        case .right:
+            proposed = CGPoint(x: layout.origin.x + layout.stage.width + inset * 0.35, y: layout.origin.y + layout.stage.height * 0.28)
+        }
+        return CGPoint(
+            x: min(max(proposed.x, inset), max(layout.container.width - inset, inset)),
+            y: min(max(proposed.y, inset), max(layout.container.height - inset, inset))
+        )
+    }
+
+    private func agentCompanionStackXOffset(for index: Int, frameWidth: CGFloat) -> CGFloat {
+        let amount = CGFloat(index) * frameWidth * 0.12
+        switch agentCompanionBubblePosition {
+        case .topLeft:
+            return amount
+        case .topRight, .above, .right:
+            return -amount
+        }
+    }
+
+    private func agentCompanionAnimation(
+        for bubble: AgentCompanionBubble,
+        key: String,
+        now: CFTimeInterval,
+        size: CGFloat
+    ) -> (x: CGFloat, y: CGFloat, entryYOffset: CGFloat, scale: CGFloat, opacity: Float) {
+        let firstSeen = agentCompanionFirstSeen[key] ?? now
+        let age = max(0, now - firstSeen)
+        let entrance = min(age / 0.32, 1)
+        let easedEntrance = 1 - pow(1 - entrance, 3)
+        let motion = BubbleMotion(seed: "\(bubble.id):\(bubble.assetName)", size: size)
+        let phase = sin(now * (2 * .pi / motion.duration))
+        let opacityPulse = 0.97 + 0.03 * cos(now * (2 * .pi / (motion.duration * 1.18)))
+        let entryYOffset = size * 0.24 * (1 - easedEntrance)
+        let entryScale = 0.70 + 0.30 * easedEntrance
+
+        if let exitStarted = agentCompanionExitStarted[key] {
+            let exitProgress = min(max((now - exitStarted) / Self.agentCompanionExitDuration, 0), 1)
+            let easedExit = 1 - pow(1 - exitProgress, 2)
+            return (
+                x: motion.x * phase,
+                y: motion.y * phase - size * 0.18 * easedExit,
+                entryYOffset: entryYOffset,
+                scale: entryScale * (1 - 0.22 * easedExit),
+                opacity: Float(min(max((1 - easedExit) * opacityPulse, 0), 1))
+            )
+        }
+
+        return (
+            x: motion.x * phase,
+            y: motion.y * phase,
+            entryYOffset: entryYOffset,
+            scale: entryScale,
+            opacity: Float(min(max(easedEntrance * opacityPulse, 0), 1))
+        )
+    }
+
+    private func reconcileAgentCompanionAnimationState(now: CFTimeInterval) {
+        let activePairs = agentCompanionBubbles.enumerated().map { index, bubble in
+            (key: agentCompanionAnimationKey(for: bubble), index: index, bubble: bubble)
+        }
+        let activeKeys = Set(activePairs.map(\.key))
+
+        for pair in activePairs {
+            agentCompanionSnapshotBubbles[pair.key] = pair.bubble
+            agentCompanionLastIndices[pair.key] = pair.index
+            agentCompanionExitStarted[pair.key] = nil
+        }
+
+        for key in activeKeys where agentCompanionFirstSeen[key] == nil {
+            agentCompanionFirstSeen[key] = now
+        }
+
+        for key in agentCompanionSnapshotBubbles.keys where !activeKeys.contains(key) && agentCompanionExitStarted[key] == nil {
+            agentCompanionExitStarted[key] = now
+        }
+
+        let visibleKeys = Set(agentCompanionSnapshotBubbles.keys.filter { key in
+            if activeKeys.contains(key) {
+                return true
+            }
+            guard let exitStarted = agentCompanionExitStarted[key] else {
+                return false
+            }
+            return now - exitStarted < Self.agentCompanionExitDuration
+        })
+
+        agentCompanionFirstSeen = agentCompanionFirstSeen.filter { visibleKeys.contains($0.key) }
+        agentCompanionExitStarted = agentCompanionExitStarted.filter { visibleKeys.contains($0.key) }
+        agentCompanionSnapshotBubbles = agentCompanionSnapshotBubbles.filter { visibleKeys.contains($0.key) }
+        agentCompanionLastIndices = agentCompanionLastIndices.filter { visibleKeys.contains($0.key) }
+    }
+
+    private func agentCompanionAnimationKey(for bubble: AgentCompanionBubble) -> String {
+        "\(bubble.id):\(bubble.assetName)"
+    }
+
+    private func agentCompanionPresentations() -> [AgentCompanionPresentation] {
+        var presentations: [AgentCompanionPresentation] = []
+        let activeKeys = Set(agentCompanionBubbles.map(agentCompanionAnimationKey))
+
+        for (index, bubble) in agentCompanionBubbles.enumerated() {
+            let key = agentCompanionAnimationKey(for: bubble)
+            presentations.append(AgentCompanionPresentation(key: key, bubble: bubble, index: index))
+        }
+
+        for (key, bubble) in agentCompanionSnapshotBubbles where !activeKeys.contains(key) {
+            presentations.append(AgentCompanionPresentation(
+                key: key,
+                bubble: bubble,
+                index: agentCompanionLastIndices[key] ?? presentations.count
+            ))
+        }
+        return presentations
+    }
+
     private func makeLoadEncoder(commandBuffer: MTLCommandBuffer, target: MTLTexture) -> MTLRenderCommandEncoder? {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = target
@@ -1888,8 +2413,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private func settlePausedVideoPrerollIfNeeded() {
         guard case .video = backgroundSource, !isPlaying else { return }
         player?.pause()
-        view?.isPaused = true
-        view?.enableSetNeedsDisplay = true
+        syncDrawLoopToCurrentIntent(drawWhenPaused: false)
     }
 
     private func loopVideoIfNeeded() {
@@ -2194,6 +2718,128 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         }
         keyTextures[id] = texture
         return texture
+    }
+
+    private func agentCompanionTexture(for bubble: AgentCompanionBubble, frameSize: CGSize) -> MTLTexture? {
+        guard let textureLoader else { return nil }
+        let frameWidth = max(Int(frameSize.width.rounded()), 1)
+        let frameHeight = max(Int(frameSize.height.rounded()), 1)
+        let style = AgentCompanionBubbleStyle.random(for: "\(bubble.id):\(bubble.assetName)")
+        let key = "\(style.resourceName):\(bubble.assetName):flip-\(agentCompanionBubbleFlipped):\(frameWidth)x\(frameHeight)"
+        if let cached = agentCompanionTextures[key] {
+            return cached
+        }
+        guard let cgImage = makeAgentCompanionImage(
+            bubble: bubble,
+            style: style,
+            frameSize: CGSize(width: frameWidth, height: frameHeight)
+        )
+        else {
+            return nil
+        }
+        do {
+            let texture = try textureLoader.newTexture(
+                cgImage: cgImage,
+                options: [
+                    MTKTextureLoader.Option.SRGB: false,
+                    MTKTextureLoader.Option.origin: MTKTextureLoader.Origin.topLeft,
+                ]
+            )
+            agentCompanionTextures[key] = texture
+            return texture
+        } catch {
+            print("[BongoUnifiedMetal] failed to load Agent companion texture \(key): \(error)")
+            return nil
+        }
+    }
+
+    private func makeAgentCompanionImage(
+        bubble: AgentCompanionBubble,
+        style: AgentCompanionBubbleStyle,
+        frameSize: CGSize
+    ) -> CGImage? {
+        guard let bubbleImage = agentCompanionResourceImage(named: style.resourceName, withExtension: "svg") else {
+            return nil
+        }
+        let pixelWidth = max(Int(frameSize.width.rounded()), 1)
+        let pixelHeight = max(Int(frameSize.height.rounded()), 1)
+        guard let bitmap = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: pixelWidth,
+            pixelsHigh: pixelHeight,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: pixelWidth * 4,
+            bitsPerPixel: 32
+        ),
+              let graphicsContext = NSGraphicsContext(bitmapImageRep: bitmap)
+        else {
+            return nil
+        }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = graphicsContext
+        defer { NSGraphicsContext.restoreGraphicsState() }
+
+        let drawRect = CGRect(origin: .zero, size: CGSize(width: pixelWidth, height: pixelHeight))
+        graphicsContext.cgContext.clear(drawRect)
+        graphicsContext.cgContext.interpolationQuality = .none
+        if agentCompanionBubbleFlipped {
+            graphicsContext.cgContext.saveGState()
+            graphicsContext.cgContext.translateBy(x: CGFloat(pixelWidth), y: 0)
+            graphicsContext.cgContext.scaleBy(x: -1, y: 1)
+            bubbleImage.draw(
+                in: drawRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+            graphicsContext.cgContext.restoreGState()
+        } else {
+            bubbleImage.draw(
+                in: drawRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+        }
+
+        let iconSize = min(CGFloat(pixelWidth) / 2.2, CGFloat(pixelHeight) / 1.9)
+        let iconRect = CGRect(
+            x: (CGFloat(pixelWidth) - iconSize) * 0.5,
+            y: (CGFloat(pixelHeight) - iconSize) * 0.5 + CGFloat(pixelHeight) * 0.08,
+            width: iconSize,
+            height: iconSize
+        )
+        if let iconImage = agentCompanionResourceImage(named: bubble.assetName, withExtension: "png") {
+            iconImage.draw(
+                in: iconRect,
+                from: .zero,
+                operation: .sourceOver,
+                fraction: 1
+            )
+        } else {
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: iconSize),
+                .foregroundColor: NSColor.white,
+            ]
+            NSString(string: bubble.fallbackIcon).draw(in: iconRect, withAttributes: attributes)
+        }
+        return bitmap.cgImage
+    }
+
+    private func agentCompanionResourceImage(named name: String, withExtension fileExtension: String) -> NSImage? {
+        guard let url = LofiiResources.url(
+            forResource: name,
+            withExtension: fileExtension,
+            subdirectory: "AgentCompanion"
+        ) else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
     }
 
     private func loadPNG(resource: String, baseDirectory: URL?) -> MTLTexture? {

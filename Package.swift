@@ -8,7 +8,10 @@ let package = Package(
     platforms: [
         .macOS(.v26),
     ],
-    products: [],
+    products: [
+        .executable(name: "lofii", targets: ["lofii"]),
+        .executable(name: "lofii-agent-hook", targets: ["lofii-agent-hook"]),
+    ],
     dependencies: [
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.4"),
     ],
@@ -73,6 +76,7 @@ let package = Package(
                 .copy("Resources/Fonts"),
                 // Bongo mode: bundled Live2D assets (native Metal renderer).
                 .copy("Resources/BongoCat"),
+                .copy("Resources/AgentCompanion"),
                 // Overlay and mask textures for the shattered-glass post effect.
                 .copy("Resources/ShatteredGlass"),
                 // Cubism native Metal backend runtime-compiles its fallback
@@ -91,6 +95,10 @@ let package = Package(
                     "-Xlinker", "Sources/Lofii/Info.plist",
                 ], .when(platforms: [.macOS])),
             ]
+        ),
+        .executableTarget(
+            name: "lofii-agent-hook",
+            path: "Sources/LofiiAgentHook"
         ),
         .testTarget(
             name: "LofiiTests",

@@ -119,6 +119,7 @@ private extension BadgePosition {
 
 struct WidgetRootView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var agentCompanion: AgentCompanionModel
     @State private var hovering = false
     @State private var isFullscreen = false
     /// Drives the volume HUD's visibility directly. Earlier this was
@@ -187,6 +188,7 @@ struct WidgetRootView: View {
             let chromeVisible = (hovering || stationPickerOpen) && !showVolume
             let topChromeVisible = chromeVisible && !settingsOpen && !isFullscreen
             let shouldRenderMotion = model.shouldRenderStageMotion
+            let shouldRenderBongoMotion = model.shouldRenderBongoMotion
             // Bongo mode owns its own single Metal stage so media, Live2D
             // model, key overlays, and final post pass are processed together.
             let youtubeVideoVisible = model.currentYouTubeVideoID != nil && model.visualMode == .live
@@ -386,13 +388,13 @@ struct WidgetRootView: View {
 
                         if bongoVisible {
                             BongoView(
-                                isPlaying: shouldRenderMotion,
+                                isPlaying: shouldRenderBongoMotion,
                                 rendersVisualBackground: !embeddedVideoVisible,
                                 appliesCRT: !embeddedVideoVisible,
                                 artworkScrollWheel: handleVolumeScrollWheel,
-                                artworkContextMenu: { [weak model] in
-                                    guard let model else { return NSMenu() }
-                                    return SettingsContextMenu.build(model: model)
+                                artworkContextMenu: { [weak model, weak agentCompanion] in
+                                    guard let model, let agentCompanion else { return NSMenu() }
+                                    return SettingsContextMenu.build(model: model, agentCompanion: agentCompanion)
                                 }
                             )
                         }
@@ -473,6 +475,12 @@ struct WidgetRootView: View {
                             mediaToSceneSnowURL = nil
                         }
                     }
+                    .onAppear {
+                        agentCompanion.setRenderable(bongoVisible)
+                    }
+                    .onChange(of: bongoVisible) { _, visible in
+                        agentCompanion.setRenderable(visible)
+                    }
 
                 // The scroll-wheel volume HUD AND the right-click
                 // settings menu both live on this transparent NSView.
@@ -484,9 +492,9 @@ struct WidgetRootView: View {
                 // dead zone.
                 WheelAndContextCatcher(
                     onDelta: handleVolumeScrollWheel,
-                    menuBuilder: { [weak model] in
-                        guard let model else { return NSMenu() }
-                        return SettingsContextMenu.build(model: model)
+                    menuBuilder: { [weak model, weak agentCompanion] in
+                        guard let model, let agentCompanion else { return NSMenu() }
+                        return SettingsContextMenu.build(model: model, agentCompanion: agentCompanion)
                     },
                     bongoOverlayVisible: bongoVisible,
                     bongoLive2DStageFrame: bongoVisible
@@ -2990,6 +2998,7 @@ private struct VolumeOverlay: View {
 /// compact rows over the artwork, with paging instead of nested menus.
 private struct SettingsOverlay: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var agentCompanion: AgentCompanionModel
 
     let compact: Bool
     let close: () -> Void
@@ -3046,6 +3055,7 @@ private struct SettingsOverlay: View {
             .frame(width: geo.size.width, height: geo.size.height)
             .onAppear {
                 model.refreshBongoImportedModels()
+                agentCompanion.refreshAgentHookStatus()
             }
         }
     }
@@ -3284,6 +3294,60 @@ private struct SettingsOverlay: View {
                 accent: model.accent,
                 textSize: textSize
             )
+
+            SettingsToggleRow(
+                title: "Agent Companion",
+                isOn: binding(
+                    get: { agentCompanion.isEnabled },
+                    set: { agentCompanion.isEnabled = $0 }
+                ),
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsChoiceRow(
+                title: "Bubble Position",
+                choices: AgentCompanionBubblePosition.allCases,
+                selection: binding(
+                    get: { agentCompanion.bubblePosition },
+                    set: { agentCompanion.bubblePosition = $0 }
+                ),
+                label: { $0.menuLabel },
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsToggleRow(
+                title: "Bubble Flip",
+                isOn: binding(
+                    get: { agentCompanion.bubbleFlipped },
+                    set: { agentCompanion.bubbleFlipped = $0 }
+                ),
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsDualActionRow(
+                title: "Agent Hooks",
+                primaryTitle: agentCompanion.agentHooksInstalled ? "Reinstall" : "Install",
+                secondaryTitle: "Uninstall",
+                accent: model.accent,
+                textSize: textSize,
+                primaryAction: agentCompanion.installAgentHooks,
+                secondaryAction: agentCompanion.uninstallAgentHooks
+            )
+
+            ForEach(AgentHookEvent.allCases) { event in
+                SettingsToggleRow(
+                    title: event.menuLabel,
+                    isOn: binding(
+                        get: { agentCompanion.enabledAgentHookEvents.contains(event) },
+                        set: { agentCompanion.setAgentHookEvent(event, enabled: $0) }
+                    ),
+                    accent: model.accent,
+                    textSize: textSize
+                )
+            }
         }
     }
 
@@ -4245,9 +4309,10 @@ private struct WheelAndContextCatcher: NSViewRepresentable {
 /// the checkmarks always mirror the current model state.
 @MainActor
 enum SettingsContextMenu {
-    static func build(model: AppModel) -> NSMenu {
+    static func build(model: AppModel, agentCompanion: AgentCompanionModel) -> NSMenu {
         let menu = NSMenu()
         menu.autoenablesItems = false
+        agentCompanion.refreshAgentHookStatus()
 
         // --- Readout submenu ---
         let readoutItem = NSMenuItem(title: "Readout", action: nil, keyEquivalent: "")
@@ -4599,6 +4664,82 @@ enum SettingsContextMenu {
         desktopItem.submenu = desktopMenu
         bongoMenu.addItem(desktopItem)
 
+        bongoMenu.addItem(.separator())
+
+        let agentCompanionItem = NSMenuItem(title: "Agent Companion", action: nil, keyEquivalent: "")
+        let agentCompanionMenu = NSMenu()
+        let agentCompanionEnabledItem = NSMenuItem(
+            title: "Enabled",
+            action: #selector(MenuTarget.toggleAgentCompanion(_:)),
+            keyEquivalent: ""
+        )
+        agentCompanionEnabledItem.state = agentCompanion.isEnabled ? .on : .off
+        agentCompanionEnabledItem.target = MenuTarget.shared
+        agentCompanionMenu.addItem(agentCompanionEnabledItem)
+        agentCompanionMenu.addItem(.separator())
+
+        let agentCompanionPositionItem = NSMenuItem(title: "Position", action: nil, keyEquivalent: "")
+        let agentCompanionPositionMenu = NSMenu()
+        for position in AgentCompanionBubblePosition.allCases {
+            let item = NSMenuItem(
+                title: position.menuLabel,
+                action: #selector(MenuTarget.selectAgentCompanionPosition(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = position.rawValue
+            item.state = (agentCompanion.bubblePosition == position) ? .on : .off
+            item.target = MenuTarget.shared
+            agentCompanionPositionMenu.addItem(item)
+        }
+        agentCompanionPositionItem.submenu = agentCompanionPositionMenu
+        agentCompanionMenu.addItem(agentCompanionPositionItem)
+
+        let agentCompanionBubbleFlipItem = NSMenuItem(
+            title: "Flip Bubble",
+            action: #selector(MenuTarget.toggleAgentCompanionBubbleFlip(_:)),
+            keyEquivalent: ""
+        )
+        agentCompanionBubbleFlipItem.state = agentCompanion.bubbleFlipped ? .on : .off
+        agentCompanionBubbleFlipItem.target = MenuTarget.shared
+        agentCompanionMenu.addItem(agentCompanionBubbleFlipItem)
+        agentCompanionMenu.addItem(.separator())
+
+        let agentCompanionHooksItem = NSMenuItem(title: "Hooks", action: nil, keyEquivalent: "")
+        let agentCompanionHooksMenu = NSMenu()
+        for event in AgentHookEvent.allCases {
+            let item = NSMenuItem(
+                title: event.menuLabel,
+                action: #selector(MenuTarget.toggleAgentCompanionHookEvent(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = event.rawValue
+            item.state = agentCompanion.enabledAgentHookEvents.contains(event) ? .on : .off
+            item.target = MenuTarget.shared
+            agentCompanionHooksMenu.addItem(item)
+        }
+        agentCompanionHooksItem.submenu = agentCompanionHooksMenu
+        agentCompanionMenu.addItem(agentCompanionHooksItem)
+        agentCompanionMenu.addItem(.separator())
+
+        let installAgentHooksItem = NSMenuItem(
+            title: agentCompanion.agentHooksInstalled ? "Reinstall Agent Hooks" : "Install Agent Hooks",
+            action: #selector(MenuTarget.installAgentHooks(_:)),
+            keyEquivalent: ""
+        )
+        installAgentHooksItem.target = MenuTarget.shared
+        agentCompanionMenu.addItem(installAgentHooksItem)
+
+        let uninstallAgentHooksItem = NSMenuItem(
+            title: "Uninstall Agent Hooks",
+            action: #selector(MenuTarget.uninstallAgentHooks(_:)),
+            keyEquivalent: ""
+        )
+        uninstallAgentHooksItem.target = MenuTarget.shared
+        agentCompanionMenu.addItem(uninstallAgentHooksItem)
+
+        agentCompanionItem.submenu = agentCompanionMenu
+        bongoMenu.addItem(agentCompanionItem)
+
         bongoRoot.submenu = bongoMenu
         menu.addItem(bongoRoot)
 
@@ -4850,6 +4991,7 @@ enum SettingsContextMenu {
         // menu items free of captured closures (which NSMenu doesn't
         // accept anyway: actions must be ObjC selectors).
         MenuTarget.shared.model = model
+        MenuTarget.shared.agentCompanion = agentCompanion
 
         return menu
     }
@@ -4914,6 +5056,7 @@ final class MenuTarget: NSObject {
     static let shared = MenuTarget()
 
     weak var model: AppModel?
+    weak var agentCompanion: AgentCompanionModel?
 
     @objc func selectSize(_ sender: NSMenuItem) {
         guard let raw = sender.representedObject as? String,
@@ -5066,6 +5209,42 @@ final class MenuTarget: NSObject {
     @objc func toggleBongoDesktopMask(_ sender: NSMenuItem) {
         guard let model else { return }
         model.toggleBongoDesktopMask()
+    }
+
+    @objc func toggleAgentCompanion(_ sender: NSMenuItem) {
+        guard let agentCompanion else { return }
+        agentCompanion.isEnabled.toggle()
+    }
+
+    @objc func selectAgentCompanionPosition(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let position = AgentCompanionBubblePosition(rawValue: raw),
+              let agentCompanion
+        else { return }
+        agentCompanion.bubblePosition = position
+    }
+
+    @objc func toggleAgentCompanionBubbleFlip(_ sender: NSMenuItem) {
+        guard let agentCompanion else { return }
+        agentCompanion.bubbleFlipped.toggle()
+    }
+
+    @objc func toggleAgentCompanionHookEvent(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let event = AgentHookEvent(rawValue: raw),
+              let agentCompanion
+        else { return }
+        agentCompanion.setAgentHookEvent(event, enabled: !agentCompanion.enabledAgentHookEvents.contains(event))
+    }
+
+    @objc func installAgentHooks(_ sender: NSMenuItem) {
+        guard let agentCompanion else { return }
+        agentCompanion.installAgentHooks()
+    }
+
+    @objc func uninstallAgentHooks(_ sender: NSMenuItem) {
+        guard let agentCompanion else { return }
+        agentCompanion.uninstallAgentHooks()
     }
 
     @objc func selectPosition(_ sender: NSMenuItem) {

@@ -20,12 +20,36 @@
 
 <table>
   <tr>
-    <td align="center"><img src="./assets/readme/showcase-bongocat.jpeg" width="380" alt="Lofii with Live2D BongoCat companion on desktop" /></td>
-    <td align="center"><img src="./assets/readme/showcase-settings.png" width="380" alt="Lofii settings window with CRT and visual effect controls" /></td>
+    <td align="center">
+      <img src="./assets/readme/showcase-bongocat.jpeg" width="250" alt="Lofii with Live2D BongoCat companion on desktop" />
+      <br />
+      <sub>Live2D BongoCat companion</sub>
+    </td>
+    <td align="center">
+      <img src="./assets/readme/showcase-agent.jpeg" width="250" alt="Lofii Agent Companion bubbles above the Live2D BongoCat companion" />
+      <br />
+      <sub>Agent Companion reactions</sub>
+    </td>
+    <td align="center">
+      <img src="./assets/readme/showcase-settings.png" width="250" alt="Lofii settings window with CRT and visual effect controls" />
+      <br />
+      <sub>Visual tuning controls</sub>
+    </td>
   </tr>
+</table>
+
+<table>
   <tr>
-    <td align="center"><img src="./assets/readme/showcase-station.jpeg" width="380" alt="Lofii station picker showing available radio stations" /></td>
-    <td align="center"><img src="./assets/readme/showcase-lofigirl.png" width="380" alt="Lofii ambient scene mode with lofi girl visual" /></td>
+    <td align="center">
+      <img src="./assets/readme/showcase-station.jpeg" width="380" alt="Lofii station picker showing available radio stations" />
+      <br />
+      <sub>Station picker</sub>
+    </td>
+    <td align="center">
+      <img src="./assets/readme/showcase-lofigirl.png" width="380" alt="Lofii YouTube mode playing a lofi girl visual" />
+      <br />
+      <sub>YouTube visual mode</sub>
+    </td>
   </tr>
 </table>
 
@@ -35,6 +59,7 @@
 - 🌃 **Ambient visuals in one click** — Switch between Live, Scene, and Media modes with rainy windows, neon city loops, imported files, or current track artwork.
 - 📺 **A tunable retro screen** — Shape the vibe with CRT curvation, vignette, scanlines, motion blur, shattered glass, waveform, glow, and readout styling.
 - 🐾 **Live2D BongoCat companion** — Keep a small desk friend on screen that reacts to keys and cursor, with importable model packs, placement, size, and input controls.
+- 🤖 **Agent Companion reactions** — Install lightweight agent hooks so Codex activity can appear as small emoji bubbles above BongoCat, grouped by agent session and rendered through the same CRT pass.
 - 📌 **A player that stays out of the way** — Park it on the screen edge, reveal controls on hover, and pin it above other windows when you want it always visible.
 
 ## Requirements
@@ -81,6 +106,12 @@ Lofii accepts the same Live2D model packs as **[ayangweb/BongoCat](https://githu
 Each subfolder is one entry in the in-app model picker (**Settings → Bongo → Model**, or the right-click menu). After adding or replacing files, choose **Reload Models** so Lofii rescans the directory.
 
 For optional key maps, desktop mask layout, and maintainer prep tools, see **[Support/README.md](./Support/README.md)**.
+
+### Agent Companion
+
+Agent Companion adds lightweight status bubbles above BongoCat for local coding agent sessions. Use **Settings → Bongo → Agent Companion** or the right-click **Bongo Cat → Agent Companion** menu to enable it, choose the bubble position, flip bubble tails, and install or remove Codex hooks.
+
+The hook bridge is local and short-lived: agent hooks send normalized events to the Lofii app over a Unix socket, and the app groups activity by source and session. Hook events can be toggled individually; changing a hook toggle reinstalls the managed hook entries.
 
 ### Custom media
 
