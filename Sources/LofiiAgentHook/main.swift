@@ -6,11 +6,43 @@ signal(SIGALRM) { _ in
     _exit(0)
 }
 
-@_silgen_name("fork")
-private func systemFork() -> pid_t
-
 private func socketPath() -> String {
     "/tmp/lofii-agent-\(getuid()).sock"
+}
+
+private func logPath() -> String {
+    let home = FileManager.default.homeDirectoryForCurrentUser.path
+    return "\(home)/Library/Logs/lofii/agent-companion.log"
+}
+
+private func logField(_ value: String?, maxLength: Int = 180) -> String {
+    guard let value else { return "nil" }
+    var sanitized = value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\r", with: "\\r")
+        .replacingOccurrences(of: "\n", with: "\\n")
+        .replacingOccurrences(of: "\t", with: "\\t")
+    if sanitized.count > maxLength {
+        sanitized = "\(sanitized.prefix(maxLength))..."
+    }
+    return "\"\(sanitized)\""
+}
+
+private func trace(_ message: String) {
+    let directory = URL(fileURLWithPath: logPath()).deletingLastPathComponent()
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let line = "\(ISO8601DateFormatter().string(from: Date())) hook.\(message)\n"
+    guard let data = line.data(using: .utf8) else { return }
+    let path = logPath()
+    if FileManager.default.fileExists(atPath: path),
+       let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        _ = try? handle.write(contentsOf: data)
+    } else {
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+    }
 }
 
 private func argumentValue(named name: String) -> String? {
@@ -81,65 +113,47 @@ private func connectSocket(_ path: String, timeoutMs: Int32 = 800) -> Int32? {
     return sock
 }
 
-private func sendAll(_ sock: Int32, data: Data) {
+private func sendAll(_ sock: Int32, data: Data) -> Bool {
     data.withUnsafeBytes { buffer in
-        guard let base = buffer.baseAddress else { return }
+        guard let base = buffer.baseAddress else { return true }
         var sent = 0
         while sent < buffer.count {
             let count = send(sock, base + sent, buffer.count - sent, 0)
             if count < 0 {
                 if errno == EINTR { continue }
-                return
+                return false
             }
-            if count == 0 { return }
+            if count == 0 { return false }
             sent += count
         }
+        return true
     }
 }
 
-private func receiveAll(_ sock: Int32) {
+private func receiveAll(_ sock: Int32) -> Int {
     var buffer = [UInt8](repeating: 0, count: 4096)
+    var total = 0
     while true {
         let count = recv(sock, &buffer, buffer.count, 0)
         if count < 0 {
             if errno == EINTR { continue }
-            return
+            return total
         }
-        if count == 0 { return }
+        if count == 0 { return total }
+        total += count
     }
 }
 
-private func redirectStandardIOToDevNull() {
-    let devNull = open("/dev/null", O_RDWR)
-    guard devNull >= 0 else {
-        close(STDIN_FILENO)
-        close(STDOUT_FILENO)
-        close(STDERR_FILENO)
-        return
-    }
-
-    if devNull != STDIN_FILENO {
-        dup2(devNull, STDIN_FILENO)
-    }
-    if devNull != STDOUT_FILENO {
-        dup2(devNull, STDOUT_FILENO)
-    }
-    if devNull != STDERR_FILENO {
-        dup2(devNull, STDERR_FILENO)
-    }
-    if devNull > STDERR_FILENO {
-        close(devNull)
-    }
-}
-
-private func deliver(_ data: Data) {
+private func deliver(_ data: Data, eventName: String?, sessionID: String?) {
     var statBuffer = stat()
     let path = socketPath()
     guard stat(path, &statBuffer) == 0, (statBuffer.st_mode & S_IFMT) == S_IFSOCK else {
+        trace("deliver.skip reason=socketMissing event=\(logField(eventName)) session=\(logField(sessionID)) path=\(logField(path))")
         return
     }
 
     guard let sock = connectSocket(path) else {
+        trace("deliver.skip reason=connectFailed event=\(logField(eventName)) session=\(logField(sessionID)) path=\(logField(path)) errno=\(errno)")
         return
     }
 
@@ -147,9 +161,15 @@ private func deliver(_ data: Data) {
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
     var receiveTimeout = timeval(tv_sec: 1, tv_usec: 0)
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &receiveTimeout, socklen_t(MemoryLayout<timeval>.size))
-    sendAll(sock, data: data)
+    trace("deliver.start event=\(logField(eventName)) session=\(logField(sessionID)) bytes=\(data.count)")
+    guard sendAll(sock, data: data) else {
+        trace("deliver.fail reason=sendFailed event=\(logField(eventName)) session=\(logField(sessionID)) errno=\(errno)")
+        close(sock)
+        return
+    }
     shutdown(sock, SHUT_WR)
-    receiveAll(sock)
+    let responseBytes = receiveAll(sock)
+    trace("deliver.done event=\(logField(eventName)) session=\(logField(sessionID)) responseBytes=\(responseBytes)")
     close(sock)
 }
 
@@ -262,12 +282,11 @@ guard json["hook_event_name"] != nil,
     exit(0)
 }
 
-let childPID = systemFork()
-guard childPID == 0 else {
-    _exit(0)
-}
-
-redirectStandardIOToDevNull()
 alarm(3)
-deliver(output)
-_exit(0)
+deliver(
+    output,
+    eventName: json["hook_event_name"] as? String,
+    sessionID: json["session_id"] as? String
+)
+alarm(0)
+exit(0)

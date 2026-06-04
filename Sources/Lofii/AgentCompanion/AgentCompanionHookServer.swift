@@ -37,6 +37,7 @@ final class AgentCompanionHookServer {
         } catch {
             umask(previousUmask)
             logger.error("Failed to start Agent companion hook server: \(error.localizedDescription, privacy: .public)")
+            DiagnosticLog.appendAgentCompanion("server.start.failed path=\(Self.socketPath) error=\(Self.logField(error.localizedDescription))")
             return
         }
 
@@ -51,11 +52,14 @@ final class AgentCompanionHookServer {
                 umask(previousUmask)
                 chmod(Self.socketPath, 0o700)
                 self?.logger.info("Agent companion hook server listening on \(Self.socketPath, privacy: .public)")
+                DiagnosticLog.appendAgentCompanion("server.ready path=\(Self.socketPath)")
             case .failed(let error):
                 umask(previousUmask)
                 self?.logger.error("Agent companion hook server failed: \(error.localizedDescription, privacy: .public)")
+                DiagnosticLog.appendAgentCompanion("server.failed path=\(Self.socketPath) error=\(Self.logField(error.localizedDescription))")
             case .cancelled:
                 umask(previousUmask)
+                DiagnosticLog.appendAgentCompanion("server.cancelled path=\(Self.socketPath)")
             default:
                 break
             }
@@ -64,6 +68,7 @@ final class AgentCompanionHookServer {
     }
 
     func stop() {
+        DiagnosticLog.appendAgentCompanion("server.stop path=\(Self.socketPath)")
         listener?.cancel()
         listener = nil
         let path = Self.socketPath
@@ -73,6 +78,7 @@ final class AgentCompanionHookServer {
     }
 
     private func handle(_ connection: NWConnection) {
+        DiagnosticLog.appendAgentCompanion("server.connection.start")
         connection.start(queue: .main)
         receiveAll(connection, accumulated: Data())
     }
@@ -87,10 +93,16 @@ final class AgentCompanionHookServer {
                 }
                 if data.count > Self.maxPayloadSize {
                     self.logger.warning("Dropping oversized Agent companion hook payload")
+                    DiagnosticLog.appendAgentCompanion("server.payload.drop reason=oversized bytes=\(data.count)")
                     connection.cancel()
                     return
                 }
                 if isComplete || error != nil {
+                    if let error {
+                        DiagnosticLog.appendAgentCompanion("server.receive.complete bytes=\(data.count) error=\(Self.logField(error.localizedDescription))")
+                    } else {
+                        DiagnosticLog.appendAgentCompanion("server.receive.complete bytes=\(data.count)")
+                    }
                     self.process(data, connection: connection)
                 } else {
                     self.receiveAll(connection, accumulated: data)
@@ -106,8 +118,12 @@ final class AgentCompanionHookServer {
 
         guard let event = AgentCompanionHookEvent(data: data) else {
             logger.warning("Dropping unparsable Agent companion hook payload")
+            DiagnosticLog.appendAgentCompanion("server.payload.drop reason=unparsable bytes=\(data.count)")
             return
         }
+        DiagnosticLog.appendAgentCompanion(
+            "server.event.accept source=\(event.source) event=\(event.eventName) session=\(Self.logField(event.sessionID)) agent=\(Self.logField(event.agentID)) tool=\(Self.logField(event.toolName)) toolInput=\(Self.logField(event.toolInputText))"
+        )
         model.handle(event)
     }
 
@@ -115,5 +131,19 @@ final class AgentCompanionHookServer {
         connection.send(content: data, completion: .contentProcessed { _ in
             connection.cancel()
         })
+    }
+
+    private nonisolated static func logField(_ value: String?, maxLength: Int = 180) -> String {
+        guard let value else { return "nil" }
+        var sanitized = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        if sanitized.count > maxLength {
+            sanitized = "\(sanitized.prefix(maxLength))..."
+        }
+        return "\"\(sanitized)\""
     }
 }

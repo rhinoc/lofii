@@ -15,6 +15,7 @@ enum AgentHookEvent: String, CaseIterable, Identifiable, Sendable {
     case subagentStop = "SubagentStop"
     case permissionRequest = "PermissionRequest"
     case stop = "Stop"
+    case sessionEnd = "SessionEnd"
 
     var id: String { rawValue }
 
@@ -30,6 +31,7 @@ enum AgentHookEvent: String, CaseIterable, Identifiable, Sendable {
         case .subagentStop: return "Subagent Stop"
         case .permissionRequest: return "Permission"
         case .stop: return "Stop"
+        case .sessionEnd: return "Session End"
         }
     }
 }

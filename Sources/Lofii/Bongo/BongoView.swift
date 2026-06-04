@@ -925,7 +925,7 @@ private struct AgentCompanionBubbleView: View {
     }
 
     private var bubbleStyle: AgentCompanionBubbleStyle {
-        AgentCompanionBubbleStyle.random(for: "\(bubble.id):\(bubble.assetName)")
+        AgentCompanionBubbleStyle.style(for: bubble)
     }
 
     private func startMotion() {
@@ -983,12 +983,16 @@ private enum AgentCompanionBubbleMetrics {
     }
 }
 
-private enum AgentCompanionBubbleStyle: String, CaseIterable {
+enum AgentCompanionBubbleStyle: String, CaseIterable {
     case speech = "agent-bubble-speech-short"
     case thought = "agent-bubble-thought-short"
     case noise = "agent-bubble-noise-short"
 
     var resourceName: String { rawValue }
+
+    static func style(for bubble: AgentCompanionBubble) -> AgentCompanionBubbleStyle {
+        random(for: bubble.id)
+    }
 
     static func random(for seed: String) -> AgentCompanionBubbleStyle {
         let styles = allCases
@@ -2724,7 +2728,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         guard let textureLoader else { return nil }
         let frameWidth = max(Int(frameSize.width.rounded()), 1)
         let frameHeight = max(Int(frameSize.height.rounded()), 1)
-        let style = AgentCompanionBubbleStyle.random(for: "\(bubble.id):\(bubble.assetName)")
+        let style = AgentCompanionBubbleStyle.style(for: bubble)
         let key = "\(style.resourceName):\(bubble.assetName):flip-\(agentCompanionBubbleFlipped):\(frameWidth)x\(frameHeight)"
         if let cached = agentCompanionTextures[key] {
             return cached

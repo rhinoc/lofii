@@ -81,6 +81,7 @@ struct AgentCompanionHookEvent: Sendable {
     let agentID: String?
     let cwd: String?
     let toolName: String?
+    let toolInputText: String?
     let promptText: String?
     let agentMessageText: String?
 
@@ -105,6 +106,7 @@ struct AgentCompanionHookEvent: Sendable {
         agentID: String?,
         cwd: String?,
         toolName: String?,
+        toolInputText: String?,
         promptText: String?,
         agentMessageText: String?
     ) {
@@ -117,6 +119,7 @@ struct AgentCompanionHookEvent: Sendable {
         self.agentID = agentID
         self.cwd = cwd
         self.toolName = toolName
+        self.toolInputText = toolInputText
         self.promptText = promptText
         self.agentMessageText = agentMessageText
     }
@@ -241,6 +244,19 @@ enum AgentCompanionSourceAdapter {
                 keys: ["last_assistant_message", "assistant_message", "assistantMessage", "message", "text", "summary", "detail", "content"]
             )
     }
+
+    static func toolInputText(in json: [String: Any]) -> String? {
+        if let text = firstString(in: json, keys: ["cmd", "command", "tool_input", "toolInput", "arguments"]) {
+            return text
+        }
+        for containerKey in ["tool_input", "toolInput", "tool", "payload", "data", "arguments"] {
+            guard let nested = json[containerKey] as? [String: Any] else { continue }
+            if let text = firstString(in: nested, keys: ["cmd", "command", "script", "input", "arguments"]) {
+                return text
+            }
+        }
+        return nil
+    }
 }
 
 struct CodexCompanionAdapter: AgentCompanionEventAdapter {
@@ -263,6 +279,7 @@ struct CodexCompanionAdapter: AgentCompanionEventAdapter {
                     containerKeys: ["tool", "payload", "data"],
                     keys: ["name", "tool_name", "toolName"]
                 ),
+            toolInputText: AgentCompanionSourceAdapter.toolInputText(in: json),
             promptText: eventName.flatMap { AgentCompanionSourceAdapter.promptText(in: json, eventName: $0) },
             agentMessageText: eventName.flatMap { AgentCompanionSourceAdapter.agentMessageText(in: json, eventName: $0) }
         )
@@ -289,6 +306,7 @@ struct GenericCompanionAdapter: AgentCompanionEventAdapter {
                     containerKeys: ["tool", "payload", "data"],
                     keys: ["name", "tool_name", "toolName"]
                 ),
+            toolInputText: AgentCompanionSourceAdapter.toolInputText(in: json),
             promptText: eventName.flatMap { AgentCompanionSourceAdapter.promptText(in: json, eventName: $0) },
             agentMessageText: eventName.flatMap { AgentCompanionSourceAdapter.agentMessageText(in: json, eventName: $0) }
         )
@@ -324,6 +342,7 @@ final class AgentCompanionModel: ObservableObject {
     @Published var enabledAgentHookEvents: Set<AgentHookEvent> {
         didSet {
             guard enabledAgentHookEvents != oldValue else { return }
+            log("model.hooks.events.change from=\(Self.logAgentHookEvents(oldValue)) to=\(Self.logAgentHookEvents(enabledAgentHookEvents))")
             saveEnabledAgentHookEvents()
             syncInstalledAgentHooksIfNeeded()
         }
@@ -332,21 +351,36 @@ final class AgentCompanionModel: ObservableObject {
     @Published private(set) var agentHooksInstalled = false
 
     private let defaults: UserDefaults
+    private let codexHome: URL
     private let visualUpdateThrottle: TimeInterval
+    private let staleThinkingTimeout: TimeInterval
     private var sessions: [String: AgentCompanionSession] = [:]
     private var pendingSessions: [String: AgentCompanionSession] = [:]
     private var pendingUpdateTasks: [String: Task<Void, Never>] = [:]
     private var expiryTasks: [String: Task<Void, Never>] = [:]
     private var hookServer: AgentCompanionHookServer?
 
+    private struct ToolStateDecision {
+        let state: AgentCompanionState
+        let reason: String
+        let executable: String?
+    }
+
     private static let enabledKey = "lofii.agentCompanion.enabled"
     private static let bubblePositionKey = "lofii.agentCompanion.bubblePosition"
     private static let bubbleFlippedKey = "lofii.agentCompanion.bubbleFlipped"
     private static let enabledAgentHookEventsKey = "lofii.agentCompanion.enabledAgentHookEvents"
 
-    init(defaults: UserDefaults = .standard, visualUpdateThrottle: TimeInterval = 0) {
+    init(
+        defaults: UserDefaults = .standard,
+        visualUpdateThrottle: TimeInterval = 0,
+        codexHome: URL = CodexAdapter.defaultCodexHome(),
+        staleThinkingTimeout: TimeInterval = 300
+    ) {
         self.defaults = defaults
+        self.codexHome = codexHome
         self.visualUpdateThrottle = max(0, visualUpdateThrottle)
+        self.staleThinkingTimeout = max(0, staleThinkingTimeout)
         isEnabled = Self.loadEnabled(defaults)
         bubblePosition = Self.loadBubblePosition(defaults)
         bubbleFlipped = defaults.bool(forKey: Self.bubbleFlippedKey)
@@ -355,6 +389,7 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     func startAgentHookServer() {
+        log("model.server.startRequested hasServer=\(hookServer != nil)")
         if hookServer == nil {
             hookServer = AgentCompanionHookServer(model: self)
         }
@@ -362,10 +397,14 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     func refreshAgentHookStatus() {
-        agentHooksInstalled = AgentHookInstaller.codex.isInstalled(
+        let installed = AgentHookInstaller.codex.isInstalled(
+            codexHome: codexHome,
             helperPath: Self.agentHookBridgePath(),
             events: enabledAgentHookEvents
         )
+        guard agentHooksInstalled != installed else { return }
+        agentHooksInstalled = installed
+        log("model.hooks.status installed=\(installed) enabledEvents=\(Self.logAgentHookEvents(enabledAgentHookEvents))")
     }
 
     func setAgentHookEvent(_ event: AgentHookEvent, enabled: Bool) {
@@ -378,6 +417,7 @@ final class AgentCompanionModel: ObservableObject {
 
     func setRenderable(_ renderable: Bool) {
         guard isRenderable != renderable else { return }
+        log("model.renderable.change from=\(isRenderable) to=\(renderable)")
         isRenderable = renderable
         if isActive {
             refreshBubbles()
@@ -389,31 +429,47 @@ final class AgentCompanionModel: ObservableObject {
     func installAgentHooks() {
         guard let helperPath = Self.agentHookBridgePath() else {
             NSLog("[AgentCompanion] Cannot install agent hooks: lofii-agent-hook helper missing")
+            log("model.hooks.install.failed reason=missing-helper")
             agentHooksInstalled = false
             return
         }
+        log("model.hooks.install.start helper=\(Self.logField(helperPath)) enabledEvents=\(Self.logAgentHookEvents(enabledAgentHookEvents))")
         do {
-            try AgentHookInstaller.codex.install(helperPath: helperPath, events: enabledAgentHookEvents)
+            try AgentHookInstaller.codex.install(codexHome: codexHome, helperPath: helperPath, events: enabledAgentHookEvents)
+            log("model.hooks.install.done helper=\(Self.logField(helperPath))")
         } catch {
             NSLog("[AgentCompanion] Failed to install agent hooks: \(error)")
+            log("model.hooks.install.failed helper=\(Self.logField(helperPath)) error=\(Self.logField(String(describing: error)))")
         }
         refreshAgentHookStatus()
     }
 
     func uninstallAgentHooks() {
+        log("model.hooks.uninstall.start")
         do {
-            try AgentHookInstaller.codex.uninstall(helperPath: Self.agentHookBridgePath())
+            try AgentHookInstaller.codex.uninstall(codexHome: codexHome, helperPath: Self.agentHookBridgePath())
+            log("model.hooks.uninstall.done")
         } catch {
             NSLog("[AgentCompanion] Failed to uninstall agent hooks: \(error)")
+            log("model.hooks.uninstall.failed error=\(Self.logField(String(describing: error)))")
         }
         refreshAgentHookStatus()
     }
 
     func handle(_ event: AgentCompanionHookEvent) {
-        guard isActive else { return }
+        guard isActive else {
+            log(
+                "model.event.drop reason=inactive enabled=\(isEnabled) renderable=\(isRenderable) source=\(event.source) event=\(event.eventName) session=\(Self.logField(event.sessionID)) tool=\(Self.logField(event.toolName))"
+            )
+            return
+        }
 
         let now = Date()
         let key = Self.sessionKey(for: event)
+        let previousSession = sessions[key]
+        log(
+            "model.event.begin key=\(Self.logField(key)) source=\(event.source) event=\(event.eventName) previousState=\(Self.logState(previousSession?.state)) previousAsset=\(Self.logField(previousSession?.assetName)) tool=\(Self.logField(event.toolName)) toolInput=\(Self.logField(event.toolInputText))"
+        )
         var session = sessions[key] ?? AgentCompanionSession(
             source: event.source,
             sessionID: event.sessionID,
@@ -438,18 +494,26 @@ final class AgentCompanionModel: ObservableObject {
             session.state = .thinking
             session.toolName = nil
             session.assetName = Self.keywordAssetName(for: event) ?? "agent-saluting"
+            scheduleStaleThinkingCleanup(for: key)
         case "UserPromptSubmit":
             session.state = .thinking
             session.toolName = nil
             session.assetName = Self.keywordAssetName(for: event) ?? "agent-saluting"
+            scheduleStaleThinkingCleanup(for: key)
         case "PreToolUse":
             session.toolName = event.toolName
-            session.state = Self.state(forToolName: event.toolName)
+            let decision = Self.toolStateDecision(forToolName: event.toolName, toolInputText: event.toolInputText)
+            session.state = decision.state
+            log(
+                "model.toolState key=\(Self.logField(key)) tool=\(Self.logField(event.toolName)) executable=\(Self.logField(decision.executable)) state=\(Self.logState(decision.state)) reason=\(decision.reason) toolInput=\(Self.logField(event.toolInputText))"
+            )
             session.assetName = Self.assetName(for: session.state, event: event)
+            cancelExpiry(for: key)
         case "PostToolUse":
             session.state = .thinking
             session.toolName = nil
             session.assetName = Self.assetName(for: .thinking, event: event)
+            scheduleStaleThinkingCleanup(for: key)
         case "PreCompact":
             session.state = .compacting
             session.toolName = nil
@@ -461,8 +525,10 @@ final class AgentCompanionModel: ObservableObject {
                 cancelPendingUpdate(for: key)
                 cancelExpiry(for: key)
                 refreshBubbles()
+                log("model.event.remove key=\(Self.logField(key)) event=\(event.eventName) reason=postCompact")
                 return
             }
+            log("model.event.ignore key=\(Self.logField(key)) event=\(event.eventName) reason=notCompacting currentState=\(Self.logState(session.state))")
             return
         case "SubagentStart":
             session.state = .subagent
@@ -475,14 +541,16 @@ final class AgentCompanionModel: ObservableObject {
                 cancelPendingUpdate(for: key)
                 cancelExpiry(for: key)
                 refreshBubbles()
+                log("model.event.remove key=\(Self.logField(key)) event=\(event.eventName) reason=subagentStop")
                 return
             }
+            log("model.event.ignore key=\(Self.logField(key)) event=\(event.eventName) reason=notSubagent currentState=\(Self.logState(session.state))")
             return
         case "PostToolUseFailure":
             session.state = .failure
             session.toolName = nil
             session.assetName = Self.assetName(for: .failure, event: event)
-            scheduleExpiry(for: key, after: 5)
+            cancelExpiry(for: key)
         case "PermissionRequest":
             session.state = .waiting
             session.toolName = event.toolName
@@ -498,32 +566,97 @@ final class AgentCompanionModel: ObservableObject {
             cancelPendingUpdate(for: key)
             cancelExpiry(for: key)
             refreshBubbles()
+            log("model.event.remove key=\(Self.logField(key)) event=\(event.eventName) reason=sessionEnd")
             return
         default:
             session.state = .thinking
+            session.toolName = nil
             session.assetName = Self.assetName(for: .thinking, event: event)
+            scheduleStaleThinkingCleanup(for: key)
         }
         session.fallbackIcon = Self.fallbackIcon(forAssetName: session.assetName)
+        log(
+            "model.event.resolved key=\(Self.logField(key)) event=\(event.eventName) state=\(Self.logState(session.state)) asset=\(Self.logField(session.assetName)) fallback=\(Self.logField(session.fallbackIcon))"
+        )
 
         applyVisualUpdate(session, key: key, now: now, eventName: event.eventName)
     }
 
-    private static func state(forToolName toolName: String?) -> AgentCompanionState {
+    private static func state(forToolName toolName: String?, toolInputText: String? = nil) -> AgentCompanionState {
+        toolStateDecision(forToolName: toolName, toolInputText: toolInputText).state
+    }
+
+    private static func toolStateDecision(
+        forToolName toolName: String?,
+        toolInputText: String? = nil
+    ) -> ToolStateDecision {
         let raw = (toolName ?? "").lowercased()
+        if isGenericShellToolName(raw) {
+            let executable = firstShellExecutable(in: toolInputText)
+            if let executable, !executable.isEmpty {
+                if readOnlyShellExecutables.contains(executable) {
+                    return ToolStateDecision(state: .reading, reason: "shell.readOnly", executable: executable)
+                }
+                if searchShellExecutables.contains(executable) {
+                    return ToolStateDecision(state: .searching, reason: "shell.search", executable: executable)
+                }
+            }
+        }
         if raw.contains("bash") || raw.contains("shell") || raw.contains("exec") || raw.contains("command") {
-            return .executing
+            return ToolStateDecision(state: .executing, reason: "tool.shellLike", executable: nil)
         }
         if raw.contains("write") || raw.contains("edit") || raw.contains("patch") || raw.contains("apply") {
-            return .writing
+            return ToolStateDecision(state: .writing, reason: "tool.writeLike", executable: nil)
         }
         if raw.contains("grep") || raw.contains("glob") || raw.contains("search") || raw.contains("find") {
-            return .searching
+            return ToolStateDecision(state: .searching, reason: "tool.searchLike", executable: nil)
         }
         if raw.contains("read") || raw.contains("open") || raw.contains("fetch") || raw.contains("cat") {
-            return .reading
+            return ToolStateDecision(state: .reading, reason: "tool.readLike", executable: nil)
         }
-        return .thinking
+        return ToolStateDecision(state: .thinking, reason: "tool.defaultThinking", executable: nil)
     }
+
+    private static func isGenericShellToolName(_ raw: String) -> Bool {
+        raw == "exec_command" ||
+            raw == "bash" ||
+            raw == "shell" ||
+            raw.contains("exec") ||
+            raw.contains("command")
+    }
+
+    private static func firstShellExecutable(in command: String?) -> String? {
+        let trimmed = command?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return "" }
+        let token = trimmed
+            .split { $0 == " " || $0 == "\t" || $0 == "\n" || $0 == ";" || $0 == "|" || $0 == "&" }
+            .first
+            .map(String.init) ?? ""
+        return URL(fileURLWithPath: token).lastPathComponent.lowercased()
+    }
+
+    private static let readOnlyShellExecutables: Set<String> = [
+        "cat",
+        "defaults",
+        "file",
+        "head",
+        "jq",
+        "ls",
+        "nl",
+        "plutil",
+        "sed",
+        "stat",
+        "tail",
+        "wc",
+    ]
+
+    private static let searchShellExecutables: Set<String> = [
+        "fd",
+        "find",
+        "grep",
+        "rg",
+        "tree",
+    ]
 
     private static func assetName(for state: AgentCompanionState, event: AgentCompanionHookEvent) -> String {
         if let keywordAssetName = keywordAssetName(for: event) {
@@ -679,10 +812,13 @@ final class AgentCompanionModel: ObservableObject {
 
     private func refreshBubbles() {
         guard isActive else {
+            if !bubbles.isEmpty {
+                log("model.bubbles.clear reason=inactive previous=\(Self.logBubbleSummary(bubbles))")
+            }
             bubbles = []
             return
         }
-        bubbles = sessions.values
+        let nextBubbles = sessions.values
             .filter { $0.state != .idle }
             .sorted { lhs, rhs in
                 if lhs.state.priority != rhs.state.priority {
@@ -700,6 +836,12 @@ final class AgentCompanionModel: ObservableObject {
                     freshness: $0.lastActivity
                 )
             }
+        if bubbles != nextBubbles {
+            log(
+                "model.bubbles.update count=\(nextBubbles.count) previous=\(Self.logBubbleSummary(bubbles)) next=\(Self.logBubbleSummary(nextBubbles)) sessions=\(Self.logSessionSummary(sessions))"
+            )
+        }
+        bubbles = nextBubbles
     }
 
     private var isActive: Bool {
@@ -707,6 +849,9 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     private func clearSessions() {
+        log(
+            "model.sessions.clear sessions=\(sessions.count) bubbles=\(bubbles.count) pending=\(pendingUpdateTasks.count) expiry=\(expiryTasks.count)"
+        )
         for task in pendingUpdateTasks.values {
             task.cancel()
         }
@@ -731,6 +876,9 @@ final class AgentCompanionModel: ObservableObject {
             || Self.bypassesVisualThrottle(eventName)
             || elapsed >= visualUpdateThrottle
         guard applyImmediately else {
+            log(
+                "model.visual.defer key=\(Self.logField(key)) event=\(eventName) elapsed=\(Self.logInterval(elapsed)) wait=\(Self.logInterval(visualUpdateThrottle - elapsed)) state=\(Self.logState(session.state)) asset=\(Self.logField(session.assetName))"
+            )
             pendingSessions[key] = session
             schedulePendingVisualUpdate(for: key, after: visualUpdateThrottle - elapsed)
             return
@@ -740,6 +888,9 @@ final class AgentCompanionModel: ObservableObject {
         var session = session
         session.lastVisualUpdate = now
         sessions[key] = session
+        log(
+            "model.visual.apply key=\(Self.logField(key)) event=\(eventName) immediate=\(applyImmediately) state=\(Self.logState(session.state)) asset=\(Self.logField(session.assetName))"
+        )
         refreshBubbles()
     }
 
@@ -754,23 +905,31 @@ final class AgentCompanionModel: ObservableObject {
 
     private func schedulePendingVisualUpdate(for key: String, after seconds: TimeInterval) {
         guard pendingUpdateTasks[key] == nil else { return }
+        log("model.visual.schedulePending key=\(Self.logField(key)) after=\(Self.logInterval(seconds))")
         pendingUpdateTasks[key] = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
             await MainActor.run {
                 guard let self else { return }
                 guard var session = self.pendingSessions.removeValue(forKey: key) else {
                     self.pendingUpdateTasks[key] = nil
+                    self.log("model.visual.pendingSkip key=\(Self.logField(key)) reason=noPendingSession")
                     return
                 }
                 session.lastVisualUpdate = Date()
                 self.sessions[key] = session
                 self.pendingUpdateTasks[key] = nil
+                self.log(
+                    "model.visual.pendingApply key=\(Self.logField(key)) state=\(Self.logState(session.state)) asset=\(Self.logField(session.assetName))"
+                )
                 self.refreshBubbles()
             }
         }
     }
 
     private func cancelPendingUpdate(for key: String) {
+        if pendingSessions[key] != nil || pendingUpdateTasks[key] != nil {
+            log("model.visual.cancelPending key=\(Self.logField(key))")
+        }
         pendingSessions[key] = nil
         pendingUpdateTasks[key]?.cancel()
         pendingUpdateTasks[key] = nil
@@ -778,8 +937,13 @@ final class AgentCompanionModel: ObservableObject {
 
     private func scheduleExpiry(for key: String, after seconds: TimeInterval) {
         cancelExpiry(for: key)
+        log("model.expiry.schedule key=\(Self.logField(key)) after=\(Self.logInterval(seconds))")
         expiryTasks[key] = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            do {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            } catch {
+                return
+            }
             await MainActor.run {
                 guard let self else { return }
                 guard var session = self.sessions[key] else { return }
@@ -787,14 +951,91 @@ final class AgentCompanionModel: ObservableObject {
                 session.toolName = nil
                 self.sessions[key] = session
                 self.expiryTasks[key] = nil
+                self.log("model.expiry.apply key=\(Self.logField(key))")
+                self.refreshBubbles()
+            }
+        }
+    }
+
+    private func scheduleStaleThinkingCleanup(for key: String) {
+        cancelExpiry(for: key)
+        log("model.stale.schedule key=\(Self.logField(key)) after=\(Self.logInterval(staleThinkingTimeout))")
+        let timeout = staleThinkingTimeout
+        expiryTasks[key] = Task { [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000))
+            } catch {
+                return
+            }
+            await MainActor.run {
+                guard let self else { return }
+                guard var session = self.sessions[key] else {
+                    self.expiryTasks[key] = nil
+                    return
+                }
+                guard session.state == .thinking, session.toolName == nil else {
+                    self.expiryTasks[key] = nil
+                    self.log(
+                        "model.stale.skip key=\(Self.logField(key)) state=\(Self.logState(session.state)) tool=\(Self.logField(session.toolName))"
+                    )
+                    return
+                }
+                session.state = .idle
+                session.toolName = nil
+                self.sessions[key] = session
+                self.expiryTasks[key] = nil
+                self.log("model.stale.apply key=\(Self.logField(key))")
                 self.refreshBubbles()
             }
         }
     }
 
     private func cancelExpiry(for key: String) {
+        if expiryTasks[key] != nil {
+            log("model.expiry.cancel key=\(Self.logField(key))")
+        }
         expiryTasks[key]?.cancel()
         expiryTasks[key] = nil
+    }
+
+    private func log(_ message: String) {
+        DiagnosticLog.appendAgentCompanion(message)
+    }
+
+    private static func logField(_ value: String?, maxLength: Int = 180) -> String {
+        guard let value else { return "nil" }
+        var sanitized = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+            .replacingOccurrences(of: "\t", with: "\\t")
+        if sanitized.count > maxLength {
+            sanitized = "\(sanitized.prefix(maxLength))..."
+        }
+        return "\"\(sanitized)\""
+    }
+
+    private static func logState(_ state: AgentCompanionState?) -> String {
+        state.map { String(describing: $0) } ?? "nil"
+    }
+
+    private static func logInterval(_ interval: TimeInterval) -> String {
+        String(format: "%.3fs", max(0, interval))
+    }
+
+    private static func logBubbleSummary(_ bubbles: [AgentCompanionBubble]) -> String {
+        guard !bubbles.isEmpty else { return "[]" }
+        return "[\(bubbles.map { "\($0.id):\(String(describing: $0.state)):\($0.assetName)" }.joined(separator: ","))]"
+    }
+
+    private static func logSessionSummary(_ sessions: [String: AgentCompanionSession]) -> String {
+        guard !sessions.isEmpty else { return "[]" }
+        return "[\(sessions.values.sorted { $0.id < $1.id }.map { "\($0.id):\(String(describing: $0.state)):\($0.assetName)" }.joined(separator: ","))]"
+    }
+
+    private static func logAgentHookEvents(_ events: Set<AgentHookEvent>) -> String {
+        "[\(AgentHookEvent.allCases.filter(events.contains).map(\.rawValue).joined(separator: ","))]"
     }
 
     private static func loadEnabled(_ defaults: UserDefaults) -> Bool {
@@ -828,7 +1069,7 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     private func syncInstalledAgentHooksIfNeeded() {
-        guard AgentHookInstaller.codex.hasManagedHooks(helperPath: Self.agentHookBridgePath()) || agentHooksInstalled else {
+        guard AgentHookInstaller.codex.hasManagedHooks(codexHome: codexHome, helperPath: Self.agentHookBridgePath()) || agentHooksInstalled else {
             refreshAgentHookStatus()
             return
         }

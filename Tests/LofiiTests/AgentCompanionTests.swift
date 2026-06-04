@@ -22,6 +22,24 @@ func codexToolEventsMapToIconBubbles() {
 
 @MainActor
 @Test
+func codexExecCommandReadOnlyShellCommandsUseEyes() {
+    let model = AgentCompanionModel()
+
+    model.handle(makeCodexEvent(session: "s1", event: "PreToolUse", tool: "exec_command", toolInputText: "rg -n \"bubble\" Sources"))
+    #expect(model.bubbles.map(\.state) == [.searching])
+    #expect(model.bubbles.map(\.assetName) == ["agent-eyes"])
+
+    model.handle(makeCodexEvent(session: "s1", event: "PreToolUse", tool: "exec_command", toolInputText: "ls -la Sources"))
+    #expect(model.bubbles.map(\.state) == [.reading])
+    #expect(model.bubbles.map(\.assetName) == ["agent-eyes"])
+
+    model.handle(makeCodexEvent(session: "s1", event: "PreToolUse", tool: "exec_command", toolInputText: "swift test --filter AgentCompanion"))
+    #expect(model.bubbles.map(\.state) == [.executing])
+    #expect(model.bubbles.map(\.assetName) == ["agent-lightning"])
+}
+
+@MainActor
+@Test
 func visualUpdatesThrottleRapidToolChanges() async throws {
     let model = AgentCompanionModel(visualUpdateThrottle: 0.2)
 
@@ -31,8 +49,65 @@ func visualUpdatesThrottleRapidToolChanges() async throws {
     model.handle(makeCodexEvent(session: "s1", event: "PreToolUse", tool: "Edit"))
     #expect(model.bubbles.map(\.state) == [.executing])
 
-    try await Task.sleep(nanoseconds: 250_000_000)
-    #expect(model.bubbles.map(\.state) == [.writing])
+    try await waitForBubbleStates(model, [.writing])
+}
+
+@MainActor
+@Test
+func postToolUseKeepsSessionVisibleUntilStop() async throws {
+    let model = AgentCompanionModel()
+
+    model.handle(makeCodexEvent(session: "s1", event: "UserPromptSubmit"))
+    #expect(model.bubbles.map(\.state) == [.thinking])
+    #expect(model.bubbles.map(\.assetName) == ["agent-saluting"])
+
+    try await Task.sleep(nanoseconds: 3_100_000_000)
+    #expect(model.bubbles.map(\.state) == [.thinking])
+    #expect(model.bubbles.map(\.assetName) == ["agent-saluting"])
+
+    model.handle(makeCodexEvent(session: "s1", event: "PreToolUse", tool: "Bash"))
+    #expect(model.bubbles.map(\.state) == [.executing])
+
+    model.handle(makeCodexEvent(session: "s1", event: "PostToolUse"))
+    #expect(model.bubbles.map(\.state) == [.thinking])
+
+    try await Task.sleep(nanoseconds: 1_300_000_000)
+    #expect(model.bubbles.map(\.state) == [.thinking])
+    #expect(model.bubbles.map(\.assetName) == ["agent-hot-face"])
+
+    try await Task.sleep(nanoseconds: 3_100_000_000)
+    #expect(model.bubbles.map(\.state) == [.thinking])
+    #expect(model.bubbles.map(\.assetName) == ["agent-hot-face"])
+
+    model.handle(makeCodexEvent(session: "s1", event: "Stop"))
+    #expect(model.bubbles.map(\.state) == [.success])
+    #expect(model.bubbles.map(\.assetName) == ["agent-check"])
+
+    try await waitForEmptyBubbles(model)
+}
+
+@MainActor
+@Test
+func staleThinkingCleanupClearsOnlyIdleThinkingSessions() async throws {
+    let model = AgentCompanionModel(staleThinkingTimeout: 0.2)
+
+    model.handle(makeCodexEvent(session: "s1", event: "UserPromptSubmit"))
+    #expect(model.bubbles.map(\.state) == [.thinking])
+
+    try await Task.sleep(nanoseconds: 300_000_000)
+    #expect(model.bubbles.isEmpty)
+
+    model.handle(makeCodexEvent(session: "s2", event: "UserPromptSubmit"))
+    model.handle(makeCodexEvent(session: "s2", event: "PreToolUse", tool: "Bash"))
+
+    try await Task.sleep(nanoseconds: 300_000_000)
+    #expect(model.bubbles.map(\.state) == [.executing])
+
+    model.handle(makeCodexEvent(session: "s2", event: "PostToolUse"))
+    #expect(model.bubbles.map(\.state) == [.thinking])
+
+    try await Task.sleep(nanoseconds: 300_000_000)
+    #expect(model.bubbles.isEmpty)
 }
 
 @Test
@@ -48,6 +123,35 @@ func agentCompanionShortBubbleAssetsAreBundled() {
             subdirectory: "AgentCompanion"
         ) != nil)
     }
+}
+
+@Test
+func agentCompanionBubbleStyleIsStableForSessionID() {
+    let freshness = Date(timeIntervalSince1970: 0)
+    let saluting = AgentCompanionBubble(
+        id: "codex:session-1",
+        assetName: "agent-saluting",
+        fallbackIcon: "🫡",
+        state: .thinking,
+        freshness: freshness
+    )
+    let executing = AgentCompanionBubble(
+        id: "codex:session-1",
+        assetName: "agent-lightning",
+        fallbackIcon: "⚡",
+        state: .executing,
+        freshness: freshness.addingTimeInterval(1)
+    )
+    let otherSession = AgentCompanionBubble(
+        id: "codex:session-2",
+        assetName: "agent-saluting",
+        fallbackIcon: "🫡",
+        state: .thinking,
+        freshness: freshness
+    )
+
+    #expect(AgentCompanionBubbleStyle.style(for: saluting) == AgentCompanionBubbleStyle.style(for: executing))
+    #expect(AgentCompanionBubbleStyle.style(for: otherSession) == AgentCompanionBubbleStyle.random(for: otherSession.id))
 }
 
 @Test
@@ -338,14 +442,17 @@ func enabledAgentHookEventsPersist() {
     let suiteName = "lofii.agentCompanion.test.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
     defer { defaults.removePersistentDomain(forName: suiteName) }
+    let codexHome = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lofii-agent-hooks-\(UUID().uuidString)")
+    defer { try? FileManager.default.removeItem(at: codexHome) }
 
-    let model = AgentCompanionModel(defaults: defaults)
+    let model = AgentCompanionModel(defaults: defaults, codexHome: codexHome)
     #expect(model.enabledAgentHookEvents == CodexAdapter.defaultEvents)
 
     model.setAgentHookEvent(.postToolUse, enabled: false)
     model.setAgentHookEvent(.permissionRequest, enabled: false)
 
-    let reloaded = AgentCompanionModel(defaults: defaults)
+    let reloaded = AgentCompanionModel(defaults: defaults, codexHome: codexHome)
     #expect(reloaded.enabledAgentHookEvents.contains(.postToolUse) == false)
     #expect(reloaded.enabledAgentHookEvents.contains(.permissionRequest) == false)
     #expect(reloaded.enabledAgentHookEvents.contains(.preToolUse))
@@ -390,6 +497,7 @@ func codexHookInstallerMergesAndRemovesOnlyManagedHooks() throws {
     #expect(commands(for: "PostCompact", in: installedHooks).contains("/tmp/lofii-agent-hook --source codex"))
     #expect(commands(for: "SubagentStart", in: installedHooks).contains("/tmp/lofii-agent-hook --source codex"))
     #expect(commands(for: "SubagentStop", in: installedHooks).contains("/tmp/lofii-agent-hook --source codex"))
+    #expect(commands(for: "SessionEnd", in: installedHooks).contains("/tmp/lofii-agent-hook --source codex"))
 
     let config = try String(contentsOf: codexHome.appendingPathComponent("config.toml"), encoding: .utf8)
     #expect(config.contains("[features]"))
@@ -448,6 +556,7 @@ private func makeCodexEvent(
     session: String,
     event: String,
     tool: String? = nil,
+    toolInputText: String? = nil,
     promptText: String? = nil,
     agentMessageText: String? = nil
 ) -> AgentCompanionHookEvent {
@@ -456,9 +565,41 @@ private func makeCodexEvent(
         session: session,
         event: event,
         tool: tool,
+        toolInputText: toolInputText,
         promptText: promptText,
         agentMessageText: agentMessageText
     )
+}
+
+@MainActor
+private func waitForEmptyBubbles(
+    _ model: AgentCompanionModel,
+    timeoutNanoseconds: UInt64 = 5_000_000_000
+) async throws {
+    let stepNanoseconds: UInt64 = 100_000_000
+    var elapsed: UInt64 = 0
+    while elapsed < timeoutNanoseconds {
+        if model.bubbles.isEmpty { return }
+        try await Task.sleep(nanoseconds: stepNanoseconds)
+        elapsed += stepNanoseconds
+    }
+    #expect(model.bubbles.isEmpty)
+}
+
+@MainActor
+private func waitForBubbleStates(
+    _ model: AgentCompanionModel,
+    _ states: [AgentCompanionState],
+    timeoutNanoseconds: UInt64 = 2_000_000_000
+) async throws {
+    let stepNanoseconds: UInt64 = 50_000_000
+    var elapsed: UInt64 = 0
+    while elapsed < timeoutNanoseconds {
+        if model.bubbles.map(\.state) == states { return }
+        try await Task.sleep(nanoseconds: stepNanoseconds)
+        elapsed += stepNanoseconds
+    }
+    #expect(model.bubbles.map(\.state) == states)
 }
 
 private func makeAgentEvent(
@@ -467,6 +608,7 @@ private func makeAgentEvent(
     agent: String? = nil,
     event: String,
     tool: String? = nil,
+    toolInputText: String? = nil,
     promptText: String? = nil,
     agentMessageText: String? = nil
 ) -> AgentCompanionHookEvent {
@@ -481,6 +623,9 @@ private func makeAgentEvent(
     }
     if let tool {
         json["tool_name"] = tool
+    }
+    if let toolInputText {
+        json["tool_input"] = ["cmd": toolInputText]
     }
     if let promptText {
         json["prompt"] = promptText
