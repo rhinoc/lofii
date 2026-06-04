@@ -1,5 +1,6 @@
 .DS_Store
 .tmp-icon/
+tmp/lofii-debug.log
 /.build
 /Packages
 xcuserdata/
