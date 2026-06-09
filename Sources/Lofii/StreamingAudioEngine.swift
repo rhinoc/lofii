@@ -28,6 +28,7 @@ final class StreamingAudioEngine {
     private var activeItemNotificationTokens: [NSObjectProtocol] = []
     private var retryGeneration = 0
     private var fadeTimer: Timer?
+    private var isCrossfading = false
     private var volume: Float = 1.0
     private let logger = Logger(
         subsystem: Bundle.main.bundleIdentifier ?? "lofii",
@@ -194,6 +195,15 @@ final class StreamingAudioEngine {
     }
 
     func prepareNext(track: LiveTrack, reason: String) {
+        guard !isCrossfading else {
+            logger.info(
+                "Prepare next deferred reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) because crossfade is active"
+            )
+            DiagnosticLog.appendPlayback(
+                "engine.prepareNextDeferred reason=\(reason) title=\"\(track.title)\""
+            )
+            return
+        }
         guard preparedTrackURL != track.streamURL else {
             logger.debug(
                 "Prepare next skipped reason=\(reason, privacy: .public) title=\(track.title, privacy: .public) because URL already prepared"
@@ -262,8 +272,12 @@ final class StreamingAudioEngine {
     }
 
     @discardableResult
-    func crossfadeToPreparedTrack(duration: TimeInterval, reason: String) -> Bool {
-        guard preparedTrackURL != nil, inactivePlayer.currentItem != nil else {
+    func crossfadeToPreparedTrack(
+        duration: TimeInterval,
+        reason: String,
+        onCompletion: (@MainActor @Sendable () -> Void)? = nil
+    ) -> Bool {
+        guard let incomingURL = preparedTrackURL, inactivePlayer.currentItem != nil else {
             logger.info(
                 "Crossfade skipped reason=\(reason, privacy: .public) because prepared track is missing"
             )
@@ -271,6 +285,7 @@ final class StreamingAudioEngine {
         }
 
         cancelFade()
+        isCrossfading = true
 
         let outgoingDeck = activeDeck
         let incomingDeck = activeDeck.other
@@ -288,15 +303,17 @@ final class StreamingAudioEngine {
             outgoingPlayer.replaceCurrentItem(with: nil)
             outgoingPlayer.volume = 0
             activeDeck = incomingDeck
-            currentTrackURL = preparedTrackURL
+            currentTrackURL = incomingURL
             preparedTrackURL = nil
             activePlayer.volume = volume
             retryGeneration &+= 1
             observeActiveItem(activePlayer.currentItem)
+            isCrossfading = false
             logger.info(
                 "Crossfade completed immediately reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
             )
             emitPlaybackState()
+            onCompletion?()
             return true
         }
 
@@ -321,15 +338,17 @@ final class StreamingAudioEngine {
                 outgoingPlayer.replaceCurrentItem(with: nil)
                 outgoingPlayer.volume = 0
                 self.activeDeck = incomingDeck
-                self.currentTrackURL = self.preparedTrackURL
+                self.currentTrackURL = incomingURL
                 self.preparedTrackURL = nil
                 self.activePlayer.volume = self.volume
                 self.retryGeneration &+= 1
                 self.observeActiveItem(self.activePlayer.currentItem)
+                self.isCrossfading = false
                 self.logger.info(
                     "Crossfade completed reason=\(reason, privacy: .public) currentURL=\(self.currentTrackURL?.absoluteString ?? "nil", privacy: .public)"
                 )
                 self.emitPlaybackState()
+                onCompletion?()
             }
         }
         emitPlaybackState()
@@ -495,6 +514,7 @@ final class StreamingAudioEngine {
     private func cancelFade() {
         fadeTimer?.invalidate()
         fadeTimer = nil
+        isCrossfading = false
     }
 
     private func emitPlaybackState() {

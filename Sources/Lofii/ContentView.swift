@@ -188,7 +188,7 @@ struct WidgetRootView: View {
             let chromeVisible = (hovering || stationPickerOpen) && !showVolume
             let topChromeVisible = chromeVisible && !settingsOpen && !isFullscreen
             let shouldRenderMotion = model.shouldRenderStageMotion
-            let shouldRenderBongoMotion = model.shouldRenderBongoMotion
+            let bongoRuntimeIntent = model.bongoRuntimeIntent
             // Bongo mode owns its own single Metal stage so media, Live2D
             // model, key overlays, and final post pass are processed together.
             let youtubeVideoVisible = model.currentYouTubeVideoID != nil && model.visualMode == .live
@@ -388,7 +388,7 @@ struct WidgetRootView: View {
 
                         if bongoVisible {
                             BongoView(
-                                isPlaying: shouldRenderBongoMotion,
+                                runtimeIntent: bongoRuntimeIntent,
                                 rendersVisualBackground: !embeddedVideoVisible,
                                 appliesCRT: !embeddedVideoVisible,
                                 artworkScrollWheel: handleVolumeScrollWheel,

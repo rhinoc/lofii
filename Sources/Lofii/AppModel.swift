@@ -1009,18 +1009,23 @@ final class AppModel: ObservableObject {
     @Published private(set) var isTwitchUnavailable = false
     @Published private(set) var isBilibiliLiveBuffering = false
     @Published private(set) var isBilibiliLiveUnavailable = false
-    /// UI-level visibility gate for high-frequency visual rendering work.
-    /// When false (widget hidden via menubar), scene/gif playback and
-    /// animated overlays pause to reduce CPU/GPU usage.
-    @Published private(set) var isWidgetVisible = true
+    /// Window-level presentation state. Keep occlusion as one input to policy
+    /// rather than collapsing it into "visible"; AppKit can report a missing
+    /// `.visible` occlusion bit while the widget is still on-screen.
+    @Published private(set) var widgetVisibility = WidgetVisibilitySnapshot.visible
+
+    var isWidgetVisible: Bool { widgetVisibility.isWindowPresent }
 
     /// Single gate for non-Bongo MTK-backed stages and media decode: pauses when transport is
-    /// stopped or the widget is off-screen (`isWidgetVisible` false).
-    var shouldRenderStageMotion: Bool { isPlaying && isWidgetVisible }
+    /// stopped or the widget cannot render at full rate.
+    var shouldRenderStageMotion: Bool { isPlaying && widgetVisibility.allowsFullRateVisualRendering }
 
-    /// Bongo is an input companion, not transport artwork. Keep its Live2D stage moving while
-    /// music is paused, but still pause it when the widget is hidden/off-screen.
-    var shouldRenderBongoMotion: Bool { isWidgetVisible }
+    /// Bongo is an input companion, not transport artwork. Its render loop,
+    /// Live2D clock, and input monitor are separate intents so agent bubbles
+    /// cannot accidentally keep only part of the stage alive.
+    var bongoRuntimeIntent: BongoRuntimeIntent {
+        BongoRuntimeIntent(visibility: widgetVisibility)
+    }
 
     // MARK: Display preferences (right-click menu)
     //
@@ -1401,8 +1406,27 @@ final class AppModel: ObservableObject {
     private var chillhopTransitionTimer: Timer?
     private var chillhopTransitionFireDate: Date?
     private var chillhopTransitionRemaining: TimeInterval?
+    private var chillhopPlaybackPhase: ChillhopPlaybackPhase = .idle
     private var playbackRecoveryTask: Task<Void, Never>?
     private var pendingPlaybackRecovery: PlaybackRecoveryStep?
+
+    private enum ChillhopPlaybackPhase: Equatable {
+        case idle
+        case scheduled
+        case crossfading(until: Date)
+        case cooldown(until: Date)
+
+        func recoverySuppressionReason(now: Date = Date()) -> String? {
+            switch self {
+            case .idle, .scheduled:
+                return nil
+            case .crossfading(let until):
+                return now < until ? "chillhop-crossfading" : nil
+            case .cooldown(let until):
+                return now < until ? "chillhop-transition-cooldown" : nil
+            }
+        }
+    }
 
     private enum PlaybackRecoveryStep: Equatable {
         case softResume
@@ -2180,7 +2204,25 @@ final class AppModel: ObservableObject {
     }
 
     func setWidgetWindowVisible(_ visible: Bool) {
-        isWidgetVisible = visible
+        updateWidgetVisibility(
+            WidgetVisibilitySnapshot(
+                isOrderedVisible: visible,
+                isMiniaturized: false,
+                isOcclusionVisible: visible,
+                isFullscreen: false,
+                isFullscreenTransitioning: false
+            ),
+            reason: "ordered-visible-compat"
+        )
+    }
+
+    func updateWidgetVisibility(_ snapshot: WidgetVisibilitySnapshot, reason: String) {
+        guard widgetVisibility != snapshot else { return }
+        let old = widgetVisibility
+        widgetVisibility = snapshot
+        DiagnosticLog.appendPlayback(
+            "model.widgetVisibility reason=\(reason) old={\(old.diagnosticSummary)} new={\(snapshot.diagnosticSummary)}"
+        )
     }
 
     private func syncPlayback() {
@@ -2645,6 +2687,9 @@ final class AppModel: ObservableObject {
         chillhopTransitionTimer?.invalidate()
         chillhopTransitionTimer = nil
         chillhopTransitionFireDate = nil
+        if chillhopPlaybackPhase.recoverySuppressionReason() != nil {
+            chillhopPlaybackPhase = .idle
+        }
 
         guard !chillhopQueue.isEmpty else {
             chillhopTransitionRemaining = nil
@@ -2660,6 +2705,7 @@ final class AppModel: ObservableObject {
         DiagnosticLog.appendPlayback(
             "model.scheduleChillhopTransition title=\"\(track.title)\" elapsed=\(Self.formatSeconds(elapsed)) remaining=\(Self.formatSeconds(remaining)) queueCount=\(chillhopQueue.count)"
         )
+        chillhopPlaybackPhase = .scheduled
         let fireDate = Date().addingTimeInterval(remaining)
         chillhopTransitionFireDate = fireDate
         chillhopTransitionTimer = Timer.scheduledTimer(withTimeInterval: remaining, repeats: false) { [weak self] _ in
@@ -2687,6 +2733,7 @@ final class AppModel: ObservableObject {
 
         let delay = max(remaining, 0.05)
         chillhopTransitionRemaining = delay
+        chillhopPlaybackPhase = .scheduled
         chillhopTransitionFireDate = Date().addingTimeInterval(delay)
         chillhopTransitionTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
             Task { @MainActor in
@@ -2708,9 +2755,14 @@ final class AppModel: ObservableObject {
         chillhopTransitionRemaining = nil
         chillhopQueue.removeFirst()
 
+        let crossfadeEndsAt = Date().addingTimeInterval(Self.chillhopCrossfadeDuration)
+        chillhopPlaybackPhase = .crossfading(until: crossfadeEndsAt)
         let didCrossfade = audioEngine.crossfadeToPreparedTrack(
             duration: Self.chillhopCrossfadeDuration,
-            reason: "chillhop crossfade"
+            reason: "chillhop crossfade",
+            onCompletion: { [weak self] in
+                self?.completeChillhopTransition(for: nextTrack)
+            }
         )
         currentTrack = nextTrack
         DiagnosticLog.appendPlayback(
@@ -2718,6 +2770,7 @@ final class AppModel: ObservableObject {
         )
 
         if !didCrossfade {
+            chillhopPlaybackPhase = .cooldown(until: Date().addingTimeInterval(3))
             audioEngine.play(
                 track: nextTrack,
                 elapsed: 0,
@@ -2725,11 +2778,30 @@ final class AppModel: ObservableObject {
                 shouldSeekToElapsed: false,
                 reason: "chillhop crossfade fallback"
             )
+            prepareUpcomingChillhopTrack()
+            scheduleChillhopTransition(for: nextTrack, elapsed: 0)
+            if chillhopQueue.count < Self.chillhopQueueLowWatermark {
+                Task {
+                    await loadLiveTrack(replacingCurrentItem: false)
+                }
+            }
+        } else {
+            chillhopTransitionRemaining = max(nextTrack.duration - Self.chillhopCrossfadeDuration, 0.05)
         }
 
-        prepareUpcomingChillhopTrack()
-        scheduleChillhopTransition(for: nextTrack, elapsed: 0)
         streamStatus = "Now playing · \(nextTrack.title)"
+    }
+
+    private func completeChillhopTransition(for track: LiveTrack) {
+        guard currentPreset.radio.source.isChillhop else { return }
+        guard currentTrack?.id == track.id else { return }
+
+        chillhopPlaybackPhase = .cooldown(until: Date().addingTimeInterval(3))
+        DiagnosticLog.appendPlayback(
+            "model.completeChillhopTransition title=\"\(track.title)\" remainingQueue=\(chillhopQueue.count)"
+        )
+        prepareUpcomingChillhopTrack()
+        scheduleChillhopTransition(for: track, elapsed: Self.chillhopCrossfadeDuration)
 
         if chillhopQueue.count < Self.chillhopQueueLowWatermark {
             Task {
@@ -2744,6 +2816,7 @@ final class AppModel: ObservableObject {
         chillhopTransitionFireDate = nil
         chillhopTransitionTimer?.invalidate()
         chillhopTransitionTimer = nil
+        chillhopPlaybackPhase = .idle
         if clearPreparedTrack {
             audioEngine.clearPreparedTrack(reason: "reset chillhop playback state")
         }
@@ -2756,6 +2829,13 @@ final class AppModel: ObservableObject {
         }
         guard isPlaying, currentTrack != nil else {
             cancelPlaybackRecovery()
+            return
+        }
+        if currentPreset.radio.source.isChillhop,
+           let reason = chillhopPlaybackPhase.recoverySuppressionReason() {
+            DiagnosticLog.appendPlayback(
+                "model.recoverySuppressed step=\(step) reason=\(reason) \(playbackDiagnosticContext(sample: audioEngine.playbackSample()))"
+            )
             return
         }
         guard pendingPlaybackRecovery != step else {

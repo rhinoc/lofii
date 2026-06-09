@@ -3,6 +3,43 @@ import Testing
 @testable import lofii
 
 @Test
+func bongoRuntimeIntentKeepsAnimationAliveWhenOnlyOcclusionIsMissing() throws {
+    let snapshot = WidgetVisibilitySnapshot(
+        isOrderedVisible: true,
+        isMiniaturized: false,
+        isOcclusionVisible: false,
+        isFullscreen: false,
+        isFullscreenTransitioning: false
+    )
+
+    let intent = BongoRuntimeIntent(visibility: snapshot)
+
+    #expect(snapshot.isWindowPresent)
+    #expect(!snapshot.allowsFullRateVisualRendering)
+    #expect(intent.renderLoop == .throttled(framesPerSecond: 12))
+    #expect(intent.animation.advancesClock)
+    #expect(intent.input.monitorEnabled)
+}
+
+@Test
+func bongoRuntimeIntentStopsWhenWidgetIsOrderedOut() throws {
+    let snapshot = WidgetVisibilitySnapshot(
+        isOrderedVisible: false,
+        isMiniaturized: false,
+        isOcclusionVisible: false,
+        isFullscreen: false,
+        isFullscreenTransitioning: false
+    )
+
+    let intent = BongoRuntimeIntent(visibility: snapshot)
+
+    #expect(!snapshot.isWindowPresent)
+    #expect(intent.renderLoop == .stopped)
+    #expect(!intent.animation.advancesClock)
+    #expect(!intent.input.monitorEnabled)
+}
+
+@Test
 func elapsedPlaybackIsClampedWithinTrackDuration() async throws {
     let now = Date()
     let track = LiveTrack(

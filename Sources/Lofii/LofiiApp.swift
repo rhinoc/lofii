@@ -401,12 +401,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     AppDelegate.shared?.handleDidEnterFullscreen()
                 }
             }
-            // Pause the GIF/Bongo rendering pipeline whenever the
-            // widget window is fully occluded (covered by other apps, on a
-            // hidden Space, or miniaturised to the Dock). This drops the
-            // baseline CPU floor from ~10% to ~3% while the window is not
-            // on screen — important for a "set-and-forget" lofi widget
-            // that often lives behind other windows for hours.
+            // Publish the raw window presentation facts. AppModel owns the
+            // policy: occlusion may throttle visuals, but only ordered-out /
+            // miniaturized windows fully stop Bongo animation and input.
             occlusionObserver = NotificationCenter.default.addObserver(
                 forName: NSWindow.didChangeOcclusionStateNotification,
                 object: nil,
@@ -442,25 +439,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     fileprivate func refreshWidgetWindowVisibility() {
         guard let window = WidgetFullscreenCoordinator.widgetWindow() else { return }
-        let baseVisible = window.isVisible && !window.isMiniaturized
-        guard baseVisible else {
-            AppCommandState.model?.setWidgetWindowVisible(false)
-            return
-        }
-
-        // `NSWindow.didChangeOcclusionState` often fires during native fullscreen
-        // space transitions with **no** `.visible` bit even though the window is
-        // still on-screen. AppModel's render gates pause MTKView-driven work while hidden,
-        // so Bongo appears frozen for the whole fullscreen until occlusion flips back after exit.
-        if isFullscreenTransitioning {
-            AppCommandState.model?.setWidgetWindowVisible(true)
-            return
-        }
-
-        let occlusionOK = window.occlusionState.contains(.visible)
-        let inNativeFullscreen = window.styleMask.contains(.fullScreen)
-        let visible = occlusionOK || inNativeFullscreen
-        AppCommandState.model?.setWidgetWindowVisible(visible)
+        let snapshot = WidgetVisibilitySnapshot(
+            isOrderedVisible: window.isVisible,
+            isMiniaturized: window.isMiniaturized,
+            isOcclusionVisible: window.occlusionState.contains(.visible),
+            isFullscreen: window.styleMask.contains(.fullScreen),
+            isFullscreenTransitioning: isFullscreenTransitioning
+        )
+        AppCommandState.model?.updateWidgetVisibility(snapshot, reason: "window-refresh")
     }
 
     nonisolated func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -22,7 +22,7 @@ private extension StageMetalSource {
 /// the combined image.
 struct BongoView: View {
     @EnvironmentObject private var model: AppModel
-    let isPlaying: Bool
+    let runtimeIntent: BongoRuntimeIntent
     let rendersVisualBackground: Bool
     let appliesCRT: Bool
     /// Forward scroll-wheel volume when the wheel catcher passes hits through the Live2D stage.
@@ -32,7 +32,7 @@ struct BongoView: View {
 
     var body: some View {
         BongoUnifiedStage(
-            isPlaying: isPlaying,
+            runtimeIntent: runtimeIntent,
             rendersVisualBackground: rendersVisualBackground,
             appliesCRT: appliesCRT,
             pack: model.bongoCatPack,
@@ -49,7 +49,7 @@ private struct BongoUnifiedStage: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var agentCompanion: AgentCompanionModel
     @StateObject private var coordinator: BongoCoordinator
-    let isPlaying: Bool
+    let runtimeIntent: BongoRuntimeIntent
     let rendersVisualBackground: Bool
     let appliesCRT: Bool
     let pack: BongoCatPack
@@ -71,7 +71,7 @@ private struct BongoUnifiedStage: View {
     @State private var settledLoadSessionKey: String?
 
     init(
-        isPlaying: Bool,
+        runtimeIntent: BongoRuntimeIntent,
         rendersVisualBackground: Bool = true,
         appliesCRT: Bool = true,
         pack: BongoCatPack,
@@ -80,7 +80,7 @@ private struct BongoUnifiedStage: View {
         artworkScrollWheel: ((Double) -> Void)? = nil,
         artworkContextMenu: (() -> NSMenu)? = nil
     ) {
-        self.isPlaying = isPlaying
+        self.runtimeIntent = runtimeIntent
         self.rendersVisualBackground = rendersVisualBackground
         self.appliesCRT = appliesCRT
         self.pack = pack
@@ -219,8 +219,10 @@ private struct BongoUnifiedStage: View {
                     BongoUnifiedMetalView(
                         background: unifiedMetalSource,
                         rendersVisualBackground: rendersVisualBackground,
-                        isPlaying: isPlaying,
-                        renderFramesPerSecond: inputTickRate.framesPerSecond,
+                        runtimeIntent: runtimeIntent,
+                        renderFramesPerSecond: runtimeIntent.renderLoop.resolvedFramesPerSecond(
+                            default: inputTickRate.framesPerSecond
+                        ),
                         bongoCoordinator: coordinator,
                         pack: pack,
                         bongoPackReloadToken: model.bongoPackReloadToken,
@@ -325,13 +327,13 @@ private struct BongoUnifiedStage: View {
             if coordinator.bongoModelIsReady {
                 model.markBongoLive2DReady()
             }
-            coordinator.setPlaying(isPlaying)
+            coordinator.applyRuntimeIntent(runtimeIntent)
         }
         .onDisappear {
             coordinator.tearDown()
         }
-        .onChange(of: isPlaying) { _, newValue in
-            coordinator.setPlaying(newValue)
+        .onChange(of: runtimeIntent) { _, newValue in
+            coordinator.applyRuntimeIntent(newValue)
         }
         .onChange(of: model.bongoInputTickRate) { _, rate in
             coordinator.applyInputTickRate(rate)
@@ -1041,7 +1043,7 @@ private extension BongoStageScaleTier {
 private struct BongoUnifiedMetalView: NSViewRepresentable {
     let background: StageMetalSource?
     let rendersVisualBackground: Bool
-    let isPlaying: Bool
+    let runtimeIntent: BongoRuntimeIntent
     let renderFramesPerSecond: Int
     let bongoCoordinator: BongoCoordinator
     let pack: BongoCatPack
@@ -1110,7 +1112,7 @@ private struct BongoUnifiedMetalView: NSViewRepresentable {
         renderer.update(
             background: background,
             rendersVisualBackground: rendersVisualBackground,
-            isPlaying: isPlaying,
+            runtimeIntent: runtimeIntent,
             renderFramesPerSecond: renderFramesPerSecond,
             pack: pack,
             bongoPackReloadToken: bongoPackReloadToken,
@@ -1219,7 +1221,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     private var backgroundSource: StageMetalSource?
     private var rendersVisualBackground = true
-    private var isPlaying = true
+    private var runtimeIntent = BongoRuntimeIntent.active
     private var pack: BongoCatPack = .bundled(.standard)
     private var maxLogicalStageSize: CGSize = .zero
     private var stagePlacement: BongoStagePlacement = .default
@@ -1311,7 +1313,15 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private var shouldRunDrawLoop: Bool {
-        isPlaying || needsVideoFirstFramePreroll || hasVisibleAgentCompanionBubbles || isDraggingStage
+        runtimeIntent.renderLoop.isActive || needsVideoFirstFramePreroll || hasVisibleAgentCompanionBubbles || isDraggingStage
+    }
+
+    private var shouldAdvanceLive2D: Bool {
+        runtimeIntent.animation.advancesClock
+    }
+
+    private var shouldAdvanceBackgroundMedia: Bool {
+        runtimeIntent.renderLoop.isActive
     }
 
     init(bongoCoordinator: BongoCoordinator) {
@@ -1348,7 +1358,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     func update(
         background: StageMetalSource?,
         rendersVisualBackground: Bool,
-        isPlaying: Bool,
+        runtimeIntent: BongoRuntimeIntent,
         renderFramesPerSecond: Int,
         pack: BongoCatPack,
         bongoPackReloadToken: UInt,
@@ -1391,7 +1401,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         self.onStagePlacementRatioChanged = onStagePlacementRatioChanged
         let backgroundChanged = self.backgroundSource != background
         let visualBackgroundChanged = self.rendersVisualBackground != rendersVisualBackground
-        let playbackChanged = self.isPlaying != isPlaying
+        let runtimeIntentChanged = self.runtimeIntent != runtimeIntent
         let agentCompanionChanged = self.agentCompanionBubbles != agentCompanionBubbles ||
             self.agentCompanionBubblePosition != agentCompanionBubblePosition ||
             self.agentCompanionEmojiSize != agentCompanionEmojiSize ||
@@ -1403,7 +1413,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             self.backgroundTransitionSnowOpacity != backgroundTransitionSnowOpacity ||
             self.backgroundDarkFieldOpacity != backgroundDarkFieldOpacity
 
-        self.isPlaying = isPlaying
+        self.runtimeIntent = runtimeIntent
         self.rendersVisualBackground = rendersVisualBackground
         self.renderFramesPerSecond = cappedFPS
         if renderRateChanged {
@@ -1493,10 +1503,10 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         self.maxFittedStageHeightFraction = maxFittedStageHeightFraction
         self.layoutContainerSize = layoutContainerSize
         applyPlaybackStateForVideo()
-        if backgroundChanged || playbackChanged || agentCompanionChanged || view?.isPaused != !shouldRunDrawLoop {
+        if backgroundChanged || runtimeIntentChanged || agentCompanionChanged || view?.isPaused != !shouldRunDrawLoop {
             syncDrawLoopToCurrentIntent()
         }
-        if backgroundTransitionChanged, !isPlaying {
+        if backgroundTransitionChanged, !shouldAdvanceBackgroundMedia {
             view?.draw()
         }
     }
@@ -2275,7 +2285,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             commandBuffer: commandBuffer,
             renderPassDescriptor: descriptor,
             viewport: viewport,
-            deltaTime: isPlaying ? delta : 0
+            deltaTime: shouldAdvanceLive2D ? delta : 0
         )
     }
 
@@ -2402,7 +2412,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     private func applyPlaybackStateForVideo() {
         guard case .video = backgroundSource else { return }
-        if isPlaying || needsVideoFirstFramePreroll {
+        if shouldAdvanceBackgroundMedia || needsVideoFirstFramePreroll {
             player?.play()
         } else {
             player?.pause()
@@ -2415,7 +2425,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func settlePausedVideoPrerollIfNeeded() {
-        guard case .video = backgroundSource, !isPlaying else { return }
+        guard case .video = backgroundSource, !shouldAdvanceBackgroundMedia else { return }
         player?.pause()
         syncDrawLoopToCurrentIntent(drawWhenPaused: false)
     }
@@ -2423,7 +2433,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     private func loopVideoIfNeeded() {
         guard case .video = backgroundSource, let player else { return }
         player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
-        if isPlaying {
+        if shouldAdvanceBackgroundMedia {
             player.play()
         }
     }
@@ -2445,7 +2455,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
 
     private func transitionSnowTexture() -> MTLTexture? {
         guard backgroundTransitionSnowURL != nil else { return nil }
-        guard isPlaying || currentTransitionSnowTexture == nil else { return currentTransitionSnowTexture }
+        guard shouldAdvanceBackgroundMedia || currentTransitionSnowTexture == nil else { return currentTransitionSnowTexture }
         let now = CACurrentMediaTime()
         guard nextTransitionSnowFrameTime <= 0 || now >= nextTransitionSnowFrameTime else {
             return currentTransitionSnowTexture
@@ -2540,7 +2550,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func updateGifTexture() {
-        guard isPlaying || currentGifTexture == nil else { return }
+        guard shouldAdvanceBackgroundMedia || currentGifTexture == nil else { return }
         let now = CACurrentMediaTime()
         guard nextGifFrameTime <= 0 || now >= nextGifFrameTime else { return }
         uploadGifFrame(at: gifFrameIndex)
@@ -3176,7 +3186,7 @@ final class BongoCoordinator: ObservableObject {
     private let arrowOverlayAccessoryParamByStem: [String: String]
     private var monitor: BongoInputMonitor?
     private var isModelLoaded = false
-    private var pendingPlay = true
+    private var runtimeIntent = BongoRuntimeIntent.active
     private var pendingParamValues: [String: Double] = [:]
     /// Repeating timer: mouse reconciliation + cursor ratios, then batched Live2D params.
     private var inputTickTimer: Timer?
@@ -3291,17 +3301,17 @@ final class BongoCoordinator: ObservableObject {
     func ensureModelReadyFromNative(workspaceReady: @escaping () -> Void) {
         if !isModelLoaded {
             isModelLoaded = true
-            if pendingPlay {
+            if runtimeIntent.input.monitorEnabled {
                 startMonitor()
             }
         }
         workspaceReady()
     }
 
-    func setPlaying(_ playing: Bool) {
-        pendingPlay = playing
+    func applyRuntimeIntent(_ intent: BongoRuntimeIntent) {
+        runtimeIntent = intent
         guard isModelLoaded else { return }
-        if playing {
+        if intent.input.monitorEnabled {
             startMonitor()
         } else {
             stopMonitor()
