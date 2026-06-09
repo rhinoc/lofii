@@ -3,7 +3,7 @@
   <img src="./assets/app-icon-transparent.png" alt="Lofii app icon" width="112" height="112" />
   <h1>Lofii</h1>
   <p>Your desk, but with a soundtrack.<br />
-  Stream lofi stations, fill the screen with ambient scene loops, drop in your own media, or keep a <strong>Live2D BongoCat</strong> tapping away at your side — all in a compact native macOS window that stays out of the way and always within reach.</p>
+  Stream lofi stations, fill the screen with ambient scene loops, drop in your own media, or let local coding-agent activity show up as <strong>Agent Companion</strong> bubbles above a <strong>Live2D BongoCat</strong> — all in a compact native macOS window that stays out of the way and always within reach.</p>
   <p>
     <a href="https://github.com/rhinoc/lofii/releases">Releases</a>
     &nbsp;·&nbsp;
@@ -58,8 +58,8 @@
 - 🎧 **Radio that fits your flow** — Start with Chillhop, SomaFM, and Poolsuite, or add your own YouTube, Twitch, Bilibili Live, direct video, and audio stream stations.
 - 🌃 **Ambient visuals in one click** — Switch between Live, Scene, and Media modes with rainy windows, neon city loops, imported files, or current track artwork.
 - 📺 **A tunable retro screen** — Shape the vibe with CRT curvation, vignette, scanlines, motion blur, shattered glass, waveform, glow, and readout styling.
+- 🤖 **Agent Companion reactions** — Turn local Codex activity into small status bubbles above BongoCat, grouped by agent session and rendered through the same CRT pass.
 - 🐾 **Live2D BongoCat companion** — Keep a small desk friend on screen that reacts to keys and cursor, with importable model packs, placement, size, and input controls.
-- 🤖 **Agent Companion reactions** — Install lightweight agent hooks so Codex activity can appear as small emoji bubbles above BongoCat, grouped by agent session and rendered through the same CRT pass.
 - 📌 **A player that stays out of the way** — Park it on the screen edge, reveal controls on hover, and pin it above other windows when you want it always visible.
 
 ## Requirements
@@ -109,7 +109,7 @@ For optional key maps, desktop mask layout, and maintainer prep tools, see **[Su
 
 ### Agent Companion
 
-Agent Companion adds lightweight status bubbles above BongoCat for local coding agent sessions. Use **Settings → Bongo → Agent Companion** or the right-click **Bongo Cat → Agent Companion** menu to enable it, choose the bubble position, flip bubble tails, and install or remove Codex hooks.
+Agent Companion turns local coding-agent activity into lightweight status bubbles above BongoCat. Use **Settings → Bongo → Agent Companion** or the right-click **Bongo Cat → Agent Companion** menu to enable it, choose the bubble position, flip bubble tails, and install or remove Codex hooks.
 
 The hook bridge is local and short-lived: agent hooks send normalized events to the Lofii app over a Unix socket, and the app groups activity by source and session. Hook events can be toggled individually; changing a hook toggle reinstalls the managed hook entries.
 
