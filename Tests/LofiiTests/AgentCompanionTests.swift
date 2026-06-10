@@ -94,8 +94,7 @@ func staleThinkingCleanupClearsOnlyIdleThinkingSessions() async throws {
     model.handle(makeCodexEvent(session: "s1", event: "UserPromptSubmit"))
     #expect(model.bubbles.map(\.state) == [.thinking])
 
-    try await Task.sleep(nanoseconds: 300_000_000)
-    #expect(model.bubbles.isEmpty)
+    try await waitForEmptyBubbles(model)
 
     model.handle(makeCodexEvent(session: "s2", event: "UserPromptSubmit"))
     model.handle(makeCodexEvent(session: "s2", event: "PreToolUse", tool: "Bash"))
@@ -106,8 +105,7 @@ func staleThinkingCleanupClearsOnlyIdleThinkingSessions() async throws {
     model.handle(makeCodexEvent(session: "s2", event: "PostToolUse"))
     #expect(model.bubbles.map(\.state) == [.thinking])
 
-    try await Task.sleep(nanoseconds: 300_000_000)
-    #expect(model.bubbles.isEmpty)
+    try await waitForEmptyBubbles(model)
 }
 
 @Test
