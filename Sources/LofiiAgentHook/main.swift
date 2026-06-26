@@ -175,7 +175,7 @@ private func deliver(_ data: Data, eventName: String?, sessionID: String?) {
 
 private func normalizeEventName(_ name: String) -> String {
     switch name {
-    case "user_prompt_submit", "userPromptSubmit", "UserPromptSubmitted":
+    case "user_prompt_submit", "userPromptSubmit", "UserPromptSubmitted", "beforeSubmitPrompt":
         return "UserPromptSubmit"
     case "pre_tool_use", "preToolUse":
         return "PreToolUse"
@@ -191,7 +191,7 @@ private func normalizeEventName(_ name: String) -> String {
         return "SubagentStop"
     case "post_tool_use_failure", "postToolUseFailure":
         return "PostToolUseFailure"
-    case "permission_request", "permissionRequest":
+    case "permission_request", "permissionRequest", "beforeShellExecution", "beforeMCPExecution":
         return "PermissionRequest"
     case "session_start", "sessionStart":
         return "SessionStart"
@@ -227,16 +227,27 @@ private func enrich(_ json: inout [String: Any]) {
     }
 
     if json["session_id"] == nil {
-        if let sessionID = nonEmptyString(json["sessionId"]) {
+        if let sessionID = nonEmptyString(json["sessionId"]) ?? nonEmptyString(json["conversation_id"]) ?? nonEmptyString(json["conversationId"]) {
             json["session_id"] = sessionID
         } else if let payload = json["payload"] as? [String: Any],
-                  let sessionID = nonEmptyString(payload["session_id"]) ?? nonEmptyString(payload["sessionId"]) {
+                  let sessionID = nonEmptyString(payload["session_id"]) ?? nonEmptyString(payload["sessionId"]) ?? nonEmptyString(payload["conversation_id"]) ?? nonEmptyString(payload["conversationId"]) {
             json["session_id"] = sessionID
         } else if let data = json["data"] as? [String: Any],
-                  let sessionID = nonEmptyString(data["session_id"]) ?? nonEmptyString(data["sessionId"]) {
+                  let sessionID = nonEmptyString(data["session_id"]) ?? nonEmptyString(data["sessionId"]) ?? nonEmptyString(data["conversation_id"]) ?? nonEmptyString(data["conversationId"]) {
             json["session_id"] = sessionID
         } else {
             json["session_id"] = "\(source)-ppid-\(getppid())"
+        }
+    }
+
+    if json["cwd"] == nil,
+       let roots = json["workspace_roots"] as? [Any] {
+        for case let root as String in roots {
+            let trimmed = root.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                json["cwd"] = trimmed
+                break
+            }
         }
     }
 

@@ -550,6 +550,256 @@ func codexHookInstallerRewritesSelectedManagedHooks() throws {
     ))
 }
 
+@Test
+func cursorHookInstallerMergesAndRemovesOnlyManagedHooks() throws {
+    let fileManager = FileManager.default
+    let cursorHome = fileManager.temporaryDirectory
+        .appendingPathComponent("lofii-cursor-hooks-\(UUID().uuidString)")
+    defer { try? fileManager.removeItem(at: cursorHome) }
+    try fileManager.createDirectory(at: cursorHome, withIntermediateDirectories: true)
+
+    let hooksPath = cursorHome.appendingPathComponent("hooks.json")
+    let existing = """
+    {
+      "version": 1,
+      "hooks": {
+        "preToolUse": [
+          {
+            "command": "/tmp/other-hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    }
+    """
+    try existing.write(to: hooksPath, atomically: true, encoding: .utf8)
+
+    try AgentHookInstaller.cursor.install(cursorHome: cursorHome, helperPath: "/tmp/lofii-agent-hook")
+
+    #expect(AgentHookInstaller.cursor.isInstalled(cursorHome: cursorHome, helperPath: "/tmp/lofii-agent-hook"))
+    let installedHooks = try readCursorHooksJSON(at: hooksPath)
+    let preToolCommands = cursorCommands(for: "preToolUse", in: installedHooks)
+    #expect(preToolCommands.contains("/tmp/other-hook.sh"))
+    #expect(preToolCommands.contains("/tmp/lofii-agent-hook --source cursor"))
+    #expect(cursorCommands(for: "beforeSubmitPrompt", in: installedHooks).contains("/tmp/lofii-agent-hook --source cursor"))
+    #expect(cursorCommands(for: "beforeShellExecution", in: installedHooks).contains("/tmp/lofii-agent-hook --source cursor"))
+    #expect(cursorCommands(for: "beforeMCPExecution", in: installedHooks).contains("/tmp/lofii-agent-hook --source cursor"))
+    #expect(cursorCommands(for: "postCompact", in: installedHooks).isEmpty)
+
+    let root = try JSONSerialization.jsonObject(with: Data(contentsOf: hooksPath)) as? [String: Any]
+    #expect(root?["version"] as? Int == 1)
+
+    try AgentHookInstaller.cursor.uninstall(cursorHome: cursorHome, helperPath: "/tmp/lofii-agent-hook")
+
+    let uninstalledHooks = try readCursorHooksJSON(at: hooksPath)
+    #expect(cursorCommands(for: "preToolUse", in: uninstalledHooks) == ["/tmp/other-hook.sh"])
+    #expect(AgentHookInstaller.cursor.isInstalled(cursorHome: cursorHome, helperPath: "/tmp/lofii-agent-hook") == false)
+}
+
+@Test
+func cursorHookInstallerRewritesSelectedManagedHooks() throws {
+    let fileManager = FileManager.default
+    let cursorHome = fileManager.temporaryDirectory
+        .appendingPathComponent("lofii-cursor-hooks-\(UUID().uuidString)")
+    defer { try? fileManager.removeItem(at: cursorHome) }
+    try fileManager.createDirectory(at: cursorHome, withIntermediateDirectories: true)
+
+    let helper = "/tmp/lofii-agent-hook"
+    try AgentHookInstaller.cursor.install(
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: [.preToolUse, .postToolUse, .preCompact, .subagentStart, .stop]
+    )
+    var hooks = try readCursorHooksJSON(at: cursorHome.appendingPathComponent("hooks.json"))
+    #expect(cursorCommands(for: "preToolUse", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "postToolUse", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "preCompact", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "subagentStart", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "stop", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "beforeShellExecution", in: hooks).isEmpty)
+
+    try AgentHookInstaller.cursor.install(
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: [.preToolUse, .permissionRequest]
+    )
+    hooks = try readCursorHooksJSON(at: cursorHome.appendingPathComponent("hooks.json"))
+    #expect(cursorCommands(for: "preToolUse", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "beforeShellExecution", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "beforeMCPExecution", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "postToolUse", in: hooks).isEmpty)
+    #expect(cursorCommands(for: "preCompact", in: hooks).isEmpty)
+    #expect(cursorCommands(for: "subagentStart", in: hooks).isEmpty)
+    #expect(cursorCommands(for: "stop", in: hooks).isEmpty)
+    #expect(AgentHookInstaller.cursor.isInstalled(
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: [.preToolUse, .permissionRequest]
+    ))
+}
+
+@MainActor
+@Test
+func cursorEventsNormalizeConversationIDAndBeforeSubmitPrompt() {
+    let model = AgentCompanionModel()
+
+    model.handle(makeCursorEvent(
+        session: nil,
+        conversationID: "conv-1",
+        event: "beforeSubmitPrompt",
+        promptText: "hello cursor"
+    ))
+    #expect(model.bubbles.count == 1)
+    #expect(model.bubbles.first?.id == "cursor:conv-1")
+
+    model.handle(makeCursorEvent(
+        session: nil,
+        conversationID: "conv-1",
+        event: "preToolUse",
+        tool: "Write"
+    ))
+    #expect(model.bubbles.first?.state == .writing)
+}
+
+@MainActor
+@Test
+func cursorBeforeShellExecutionMapsToWaitingState() {
+    let model = AgentCompanionModel()
+
+    model.handle(makeCursorEvent(
+        session: nil,
+        conversationID: "conv-2",
+        event: "beforeShellExecution",
+        tool: "Shell",
+        toolInputText: "curl https://example.com"
+    ))
+    #expect(model.bubbles.map(\.state) == [.waiting])
+}
+
+@Test
+func agentHookInstallSnapshotCountsHookSlots() throws {
+    let fileManager = FileManager.default
+    let codexHome = fileManager.temporaryDirectory
+        .appendingPathComponent("lofii-hook-snapshot-codex-\(UUID().uuidString)")
+    let cursorHome = fileManager.temporaryDirectory
+        .appendingPathComponent("lofii-hook-snapshot-cursor-\(UUID().uuidString)")
+    defer {
+        try? fileManager.removeItem(at: codexHome)
+        try? fileManager.removeItem(at: cursorHome)
+    }
+    try fileManager.createDirectory(at: codexHome, withIntermediateDirectories: true)
+    try fileManager.createDirectory(at: cursorHome, withIntermediateDirectories: true)
+
+    let helper = "/tmp/lofii-agent-hook"
+    let events: Set<AgentHookEvent> = [.preToolUse, .permissionRequest]
+
+    let empty = AgentHookInstaller.installSnapshot(
+        codexHome: codexHome,
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: events
+    )
+    #expect(empty.expectedCount == 5)
+    #expect(empty.installedCount == 0)
+    #expect(empty.hasManagedHooks == false)
+
+    try AgentHookInstaller.codex.install(codexHome: codexHome, helperPath: helper, events: [.preToolUse])
+
+    let partial = AgentHookInstaller.installSnapshot(
+        codexHome: codexHome,
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: events
+    )
+    #expect(partial.expectedCount == 5)
+    #expect(partial.installedCount == 1)
+    #expect(partial.hasManagedHooks)
+    #expect(partial.isInstallComplete == false)
+
+    try AgentHookInstaller.codex.install(codexHome: codexHome, helperPath: helper, events: events)
+    try AgentHookInstaller.cursor.install(cursorHome: cursorHome, helperPath: helper, events: events)
+
+    let complete = AgentHookInstaller.installSnapshot(
+        codexHome: codexHome,
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: events
+    )
+    #expect(complete.expectedCount == 5)
+    #expect(complete.installedCount == 5)
+    #expect(complete.isInstallComplete)
+}
+
+@Test
+func cursorHookInstallerBackfillsMissingExpectedHooks() throws {
+    let fileManager = FileManager.default
+    let cursorHome = fileManager.temporaryDirectory
+        .appendingPathComponent("lofii-cursor-backfill-\(UUID().uuidString)")
+    defer { try? fileManager.removeItem(at: cursorHome) }
+    try fileManager.createDirectory(at: cursorHome, withIntermediateDirectories: true)
+
+    let partial = """
+    {
+      "version": 1,
+      "hooks": {
+        "preToolUse": [
+          {
+            "command": "/tmp/lofii-agent-hook --source cursor",
+            "timeout": 5,
+            "type": "command"
+          }
+        ]
+      }
+    }
+    """
+    try partial.write(to: cursorHome.appendingPathComponent("hooks.json"), atomically: true, encoding: .utf8)
+
+    let helper = "/tmp/lofii-agent-hook"
+    try AgentHookInstaller.cursor.install(
+        cursorHome: cursorHome,
+        helperPath: helper,
+        events: Set(AgentHookEvent.allCases)
+    )
+
+    let hooks = try readCursorHooksJSON(at: cursorHome.appendingPathComponent("hooks.json"))
+    #expect(cursorCommands(for: "postToolUse", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "beforeShellExecution", in: hooks).contains("\(helper) --source cursor"))
+    #expect(cursorCommands(for: "beforeMCPExecution", in: hooks).contains("\(helper) --source cursor"))
+}
+
+private func makeCursorEvent(
+    session: String?,
+    conversationID: String,
+    event: String,
+    tool: String? = nil,
+    toolInputText: String? = nil,
+    promptText: String? = nil,
+    agentMessageText: String? = nil
+) -> AgentCompanionHookEvent {
+    var json: [String: Any] = [
+        "hook_event_name": event,
+        "conversation_id": conversationID,
+        "_source": "cursor",
+        "workspace_roots": ["/Users/ryan/dev/lofii"],
+    ]
+    if let session {
+        json["session_id"] = session
+    }
+    if let tool {
+        json["tool_name"] = tool
+    }
+    if let toolInputText {
+        json["tool_input"] = ["command": toolInputText]
+    }
+    if let promptText {
+        json["prompt"] = promptText
+    }
+    if let agentMessageText {
+        json["agent_message"] = agentMessageText
+    }
+    return AgentCompanionHookEvent(rawJSON: json)!
+}
+
 private func makeCodexEvent(
     session: String,
     event: String,
@@ -640,10 +890,19 @@ private func readHooksJSON(at url: URL) throws -> [String: Any] {
     return root?["hooks"] as? [String: Any] ?? [:]
 }
 
+private func readCursorHooksJSON(at url: URL) throws -> [String: Any] {
+    try readHooksJSON(at: url)
+}
+
 private func commands(for event: String, in hooks: [String: Any]) -> [String] {
     guard let groups = hooks[event] as? [[String: Any]] else { return [] }
     return groups.flatMap { group -> [String] in
         guard let nestedHooks = group["hooks"] as? [[String: Any]] else { return [] }
         return nestedHooks.compactMap { $0["command"] as? String }
     }
+}
+
+private func cursorCommands(for event: String, in hooks: [String: Any]) -> [String] {
+    guard let entries = hooks[event] as? [[String: Any]] else { return [] }
+    return entries.compactMap { $0["command"] as? String }
 }

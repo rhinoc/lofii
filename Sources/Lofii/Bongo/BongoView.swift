@@ -981,7 +981,7 @@ private struct AgentCompanionBubbleView: View {
 
 private enum AgentCompanionBubbleMetrics {
     static func frameSize(for emojiSize: CGFloat) -> CGSize {
-        CGSize(width: emojiSize * 2.2, height: emojiSize * 1.9)
+        CGSize(width: emojiSize * 2.4, height: emojiSize * 2.1)
     }
 }
 
@@ -2021,16 +2021,18 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         let scaleY = viewportSize.height / max(layout.container.height, 1)
         let emojiSize = max(agentCompanionEmojiSize, 1)
         let framePoints = AgentCompanionBubbleMetrics.frameSize(for: emojiSize)
-        let frameSize = CGSize(
-            width: max(1, (framePoints.width * scaleX).rounded()),
-            height: max(1, (framePoints.height * scaleY).rounded())
+        let frameSize = pixelAlignedAgentCompanionTextureSize(
+            CGSize(
+                width: max(1, (framePoints.width * scaleX).rounded()),
+                height: max(1, (framePoints.height * scaleY).rounded())
+            )
         )
         let anchor = agentCompanionAnchor(
             layout: layout,
             frameSize: framePoints
         )
         let stackXOffset = agentCompanionStackXOffset(for: index, frameWidth: framePoints.width)
-        let stackYOffset = -CGFloat(index) * framePoints.height * 0.36
+        let stackYOffset = -CGFloat(index) * framePoints.height * 0.44
         let animation = agentCompanionAnimation(for: bubble, key: key, now: now, size: framePoints.width)
         let center = CGPoint(
             x: anchor.x + stackXOffset + animation.x,
@@ -2060,6 +2062,19 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         )
     }
 
+    private func pixelAlignedAgentCompanionTextureSize(_ proposed: CGSize) -> CGSize {
+        let unit = max(
+            1,
+            Int(
+                min(
+                    max(proposed.width, 1) / 24,
+                    max(proposed.height, 1) / 21
+                ).rounded()
+            )
+        )
+        return CGSize(width: unit * 24, height: unit * 21)
+    }
+
     private func agentCompanionAnchor(
         layout: (container: CGSize, stage: CGSize, origin: CGPoint),
         frameSize: CGSize
@@ -2083,7 +2098,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func agentCompanionStackXOffset(for index: Int, frameWidth: CGFloat) -> CGFloat {
-        let amount = CGFloat(index) * frameWidth * 0.12
+        let amount = CGFloat(index) * frameWidth * 0.18
         switch agentCompanionBubblePosition {
         case .topLeft:
             return amount
@@ -2104,7 +2119,6 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         let easedEntrance = 1 - pow(1 - entrance, 3)
         let motion = BubbleMotion(seed: "\(bubble.id):\(bubble.assetName)", size: size)
         let phase = sin(now * (2 * .pi / motion.duration))
-        let opacityPulse = 0.97 + 0.03 * cos(now * (2 * .pi / (motion.duration * 1.18)))
         let entryYOffset = size * 0.24 * (1 - easedEntrance)
         let entryScale = 0.70 + 0.30 * easedEntrance
 
@@ -2116,7 +2130,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
                 y: motion.y * phase - size * 0.18 * easedExit,
                 entryYOffset: entryYOffset,
                 scale: entryScale * (1 - 0.22 * easedExit),
-                opacity: Float(min(max((1 - easedExit) * opacityPulse, 0), 1))
+                opacity: Float(min(max(1 - easedExit, 0), 1))
             )
         }
 
@@ -2125,7 +2139,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             y: motion.y * phase,
             entryYOffset: entryYOffset,
             scale: entryScale,
-            opacity: Float(min(max(easedEntrance * opacityPulse, 0), 1))
+            opacity: Float(min(max(easedEntrance, 0), 1))
         )
     }
 
@@ -2739,7 +2753,8 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         let frameWidth = max(Int(frameSize.width.rounded()), 1)
         let frameHeight = max(Int(frameSize.height.rounded()), 1)
         let style = AgentCompanionBubbleStyle.style(for: bubble)
-        let key = "\(style.resourceName):\(bubble.assetName):flip-\(agentCompanionBubbleFlipped):\(frameWidth)x\(frameHeight)"
+        let outlineColor = agentCompanionBubbleOutlineColor(for: bubble)
+        let key = "\(style.resourceName):\(bubble.assetName):\(outlineColor):flip-\(agentCompanionBubbleFlipped):\(frameWidth)x\(frameHeight)"
         if let cached = agentCompanionTextures[key] {
             return cached
         }
@@ -2772,7 +2787,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
         style: AgentCompanionBubbleStyle,
         frameSize: CGSize
     ) -> CGImage? {
-        guard let bubbleImage = agentCompanionResourceImage(named: style.resourceName, withExtension: "svg") else {
+        guard let bubbleImage = agentCompanionBubbleImage(named: style.resourceName, outlineColor: agentCompanionBubbleOutlineColor(for: bubble)) else {
             return nil
         }
         let pixelWidth = max(Int(frameSize.width.rounded()), 1)
@@ -2821,7 +2836,7 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             )
         }
 
-        let iconSize = min(CGFloat(pixelWidth) / 2.2, CGFloat(pixelHeight) / 1.9)
+        let iconSize = min(CGFloat(pixelWidth) / 2.4, CGFloat(pixelHeight) / 2.1)
         let iconRect = CGRect(
             x: (CGFloat(pixelWidth) - iconSize) * 0.5,
             y: (CGFloat(pixelHeight) - iconSize) * 0.5 + CGFloat(pixelHeight) * 0.08,
@@ -2843,6 +2858,32 @@ private final class BongoUnifiedMetalRenderer: NSObject, MTKViewDelegate {
             NSString(string: bubble.fallbackIcon).draw(in: iconRect, withAttributes: attributes)
         }
         return bitmap.cgImage
+    }
+
+    private func agentCompanionBubbleImage(named name: String, outlineColor: String) -> NSImage? {
+        guard let url = LofiiResources.url(
+            forResource: name,
+            withExtension: "svg",
+            subdirectory: "AgentCompanion"
+        ),
+              let data = try? Data(contentsOf: url),
+              var source = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        source = source.replacingOccurrences(of: "#171717", with: outlineColor)
+        return NSImage(data: Data(source.utf8))
+    }
+
+    private func agentCompanionBubbleOutlineColor(for bubble: AgentCompanionBubble) -> String {
+        switch bubble.id.split(separator: ":", maxSplits: 1).first?.lowercased() {
+        case "cursor":
+            return "#E4E2DC"
+        case "codex", "openai":
+            return "#DCDFFF"
+        default:
+            return "#E8E8F0"
+        }
     }
 
     private func agentCompanionResourceImage(named name: String, withExtension fileExtension: String) -> NSImage? {

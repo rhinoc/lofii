@@ -133,6 +133,7 @@ protocol AgentCompanionEventAdapter: Sendable {
 enum AgentCompanionSourceAdapter {
     private static let adapters: [String: any AgentCompanionEventAdapter] = [
         "codex": CodexCompanionAdapter(),
+        "cursor": CursorCompanionAdapter(),
     ]
 
     static func source(in json: [String: Any]) -> String? {
@@ -183,7 +184,7 @@ enum AgentCompanionSourceAdapter {
 
     static func normalizeEventName(_ name: String) -> String {
         switch name {
-        case "user_prompt_submit", "userPromptSubmit", "UserPromptSubmitted":
+        case "user_prompt_submit", "userPromptSubmit", "UserPromptSubmitted", "beforeSubmitPrompt":
             return "UserPromptSubmit"
         case "pre_tool_use", "preToolUse":
             return "PreToolUse"
@@ -199,7 +200,7 @@ enum AgentCompanionSourceAdapter {
             return "SubagentStop"
         case "post_tool_use_failure", "postToolUseFailure":
             return "PostToolUseFailure"
-        case "permission_request", "permissionRequest":
+        case "permission_request", "permissionRequest", "beforeShellExecution", "beforeMCPExecution":
             return "PermissionRequest"
         case "session_start", "sessionStart":
             return "SessionStart"
@@ -236,13 +237,33 @@ enum AgentCompanionSourceAdapter {
         guard eventName != "UserPromptSubmit" else { return nil }
         return firstString(
             in: json,
-            keys: ["last_assistant_message", "assistant_message", "assistantMessage", "message", "text", "summary", "detail", "content"]
+            keys: [
+                "last_assistant_message", "assistant_message", "assistantMessage", "agent_message", "agentMessage",
+                "message", "text", "summary", "detail", "content",
+            ]
         )
             ?? firstText(
                 inNestedDictionary: json,
                 containerKeys: ["payload", "data"],
-                keys: ["last_assistant_message", "assistant_message", "assistantMessage", "message", "text", "summary", "detail", "content"]
+                keys: [
+                    "last_assistant_message", "assistant_message", "assistantMessage", "agent_message", "agentMessage",
+                    "message", "text", "summary", "detail", "content",
+                ]
             )
+    }
+
+    static func sessionID(in json: [String: Any]) -> String? {
+        firstString(in: json, keys: ["session_id", "sessionId", "conversation_id", "conversationId"])
+            ?? firstText(
+                inNestedDictionary: json,
+                containerKeys: ["payload", "data"],
+                keys: ["session_id", "sessionId", "conversation_id", "conversationId"]
+            )
+    }
+
+    static func cwd(in json: [String: Any]) -> String? {
+        firstString(in: json, keys: ["cwd"])
+            ?? (json["workspace_roots"] as? [String])?.first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     }
 
     static func toolInputText(in json: [String: Any]) -> String? {
@@ -270,9 +291,36 @@ struct CodexCompanionAdapter: AgentCompanionEventAdapter {
         return AgentCompanionHookEvent(
             source: source,
             eventName: eventName,
-            sessionID: AgentCompanionSourceAdapter.firstString(in: json, keys: ["session_id", "sessionId"]),
+            sessionID: AgentCompanionSourceAdapter.sessionID(in: json),
             agentID: AgentCompanionSourceAdapter.firstString(in: json, keys: ["agent_id", "agentId"]),
-            cwd: AgentCompanionSourceAdapter.firstString(in: json, keys: ["cwd"]),
+            cwd: AgentCompanionSourceAdapter.cwd(in: json),
+            toolName: AgentCompanionSourceAdapter.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
+                ?? AgentCompanionSourceAdapter.firstString(
+                    inNestedDictionary: json,
+                    containerKeys: ["tool", "payload", "data"],
+                    keys: ["name", "tool_name", "toolName"]
+                ),
+            toolInputText: AgentCompanionSourceAdapter.toolInputText(in: json),
+            promptText: eventName.flatMap { AgentCompanionSourceAdapter.promptText(in: json, eventName: $0) },
+            agentMessageText: eventName.flatMap { AgentCompanionSourceAdapter.agentMessageText(in: json, eventName: $0) }
+        )
+    }
+}
+
+struct CursorCompanionAdapter: AgentCompanionEventAdapter {
+    let source = "cursor"
+
+    func normalize(_ json: [String: Any]) -> AgentCompanionHookEvent? {
+        let eventName = AgentCompanionSourceAdapter.firstString(
+            in: json,
+            keys: ["hook_event_name", "hookEventName", "event_name", "eventName", "event"]
+        ).map(AgentCompanionSourceAdapter.normalizeEventName)
+        return AgentCompanionHookEvent(
+            source: source,
+            eventName: eventName,
+            sessionID: AgentCompanionSourceAdapter.sessionID(in: json),
+            agentID: AgentCompanionSourceAdapter.firstString(in: json, keys: ["agent_id", "agentId", "subagent_id", "subagentId"]),
+            cwd: AgentCompanionSourceAdapter.cwd(in: json),
             toolName: AgentCompanionSourceAdapter.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
                 ?? AgentCompanionSourceAdapter.firstString(
                     inNestedDictionary: json,
@@ -297,9 +345,9 @@ struct GenericCompanionAdapter: AgentCompanionEventAdapter {
         return AgentCompanionHookEvent(
             source: source,
             eventName: eventName,
-            sessionID: AgentCompanionSourceAdapter.firstString(in: json, keys: ["session_id", "sessionId"]),
+            sessionID: AgentCompanionSourceAdapter.sessionID(in: json),
             agentID: AgentCompanionSourceAdapter.firstString(in: json, keys: ["agent_id", "agentId"]),
-            cwd: AgentCompanionSourceAdapter.firstString(in: json, keys: ["cwd"]),
+            cwd: AgentCompanionSourceAdapter.cwd(in: json),
             toolName: AgentCompanionSourceAdapter.firstString(in: json, keys: ["tool_name", "toolName", "tool", "name"])
                 ?? AgentCompanionSourceAdapter.firstString(
                     inNestedDictionary: json,
@@ -348,10 +396,33 @@ final class AgentCompanionModel: ObservableObject {
         }
     }
     @Published private(set) var bubbles: [AgentCompanionBubble] = []
-    @Published private(set) var agentHooksInstalled = false
+    @Published private(set) var agentHooksExpectedCount = 0
+    @Published private(set) var agentHooksInstalledCount = 0
+    @Published private(set) var agentHooksHasManaged = false
+    @Published private(set) var agentHooksStatusMessage: String?
+
+    var agentHooksInstallTitle: String {
+        (agentHooksInstalledCount > 0 || agentHooksHasManaged) ? "Reinstall" : "Install"
+    }
+
+    var agentHooksInstallEnabled: Bool {
+        agentHooksInstalledCount < agentHooksExpectedCount
+    }
+
+    var agentHooksUninstallEnabled: Bool {
+        agentHooksHasManaged
+    }
+
+    var agentHooksStatusSummary: String {
+        guard agentHooksExpectedCount > 0 else {
+            return agentHooksHasManaged ? "Extra hooks installed" : "No hooks enabled"
+        }
+        return "\(agentHooksInstalledCount)/\(agentHooksExpectedCount) hooks installed"
+    }
 
     private let defaults: UserDefaults
     private let codexHome: URL
+    private let cursorHome: URL
     private let visualUpdateThrottle: TimeInterval
     private let staleThinkingTimeout: TimeInterval
     private var sessions: [String: AgentCompanionSession] = [:]
@@ -375,10 +446,12 @@ final class AgentCompanionModel: ObservableObject {
         defaults: UserDefaults = .standard,
         visualUpdateThrottle: TimeInterval = 0,
         codexHome: URL = CodexAdapter.defaultCodexHome(),
+        cursorHome: URL = CursorAdapter.defaultCursorHome(),
         staleThinkingTimeout: TimeInterval = 300
     ) {
         self.defaults = defaults
         self.codexHome = codexHome
+        self.cursorHome = cursorHome
         self.visualUpdateThrottle = max(0, visualUpdateThrottle)
         self.staleThinkingTimeout = max(0, staleThinkingTimeout)
         isEnabled = Self.loadEnabled(defaults)
@@ -397,14 +470,21 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     func refreshAgentHookStatus() {
-        let installed = AgentHookInstaller.codex.isInstalled(
+        let snapshot = AgentHookInstaller.installSnapshot(
             codexHome: codexHome,
+            cursorHome: cursorHome,
             helperPath: Self.agentHookBridgePath(),
             events: enabledAgentHookEvents
         )
-        guard agentHooksInstalled != installed else { return }
-        agentHooksInstalled = installed
-        log("model.hooks.status installed=\(installed) enabledEvents=\(Self.logAgentHookEvents(enabledAgentHookEvents))")
+        guard agentHooksExpectedCount != snapshot.expectedCount
+            || agentHooksInstalledCount != snapshot.installedCount
+            || agentHooksHasManaged != snapshot.hasManagedHooks else { return }
+        agentHooksExpectedCount = snapshot.expectedCount
+        agentHooksInstalledCount = snapshot.installedCount
+        agentHooksHasManaged = snapshot.hasManagedHooks
+        log(
+            "model.hooks.status installed=\(snapshot.installedCount)/\(snapshot.expectedCount) managed=\(snapshot.hasManagedHooks) enabledEvents=\(Self.logAgentHookEvents(enabledAgentHookEvents))"
+        )
     }
 
     func setAgentHookEvent(_ event: AgentHookEvent, enabled: Bool) {
@@ -428,32 +508,51 @@ final class AgentCompanionModel: ObservableObject {
 
     func installAgentHooks() {
         guard let helperPath = Self.agentHookBridgePath() else {
+            let message = "Install failed: lofii-agent-hook helper not found"
             NSLog("[AgentCompanion] Cannot install agent hooks: lofii-agent-hook helper missing")
             log("model.hooks.install.failed reason=missing-helper")
-            agentHooksInstalled = false
+            agentHooksExpectedCount = 0
+            agentHooksInstalledCount = 0
+            agentHooksHasManaged = false
+            agentHooksStatusMessage = message
             return
         }
         log("model.hooks.install.start helper=\(Self.logField(helperPath)) enabledEvents=\(Self.logAgentHookEvents(enabledAgentHookEvents))")
         do {
             try AgentHookInstaller.codex.install(codexHome: codexHome, helperPath: helperPath, events: enabledAgentHookEvents)
-            log("model.hooks.install.done helper=\(Self.logField(helperPath))")
+            try AgentHookInstaller.cursor.install(cursorHome: cursorHome, helperPath: helperPath, events: enabledAgentHookEvents)
+            refreshAgentHookStatus()
+            agentHooksStatusMessage = agentHooksInstallEnabled
+                ? "Installed \(agentHooksInstalledCount)/\(agentHooksExpectedCount) hooks. Tap Reinstall to finish."
+                : "Hooks ready: \(agentHooksInstalledCount)/\(agentHooksExpectedCount) installed."
+            log("model.hooks.install.done helper=\(Self.logField(helperPath)) \(agentHooksStatusSummary)")
         } catch {
+            let message = "Install failed: \(error.localizedDescription)"
             NSLog("[AgentCompanion] Failed to install agent hooks: \(error)")
             log("model.hooks.install.failed helper=\(Self.logField(helperPath)) error=\(Self.logField(String(describing: error)))")
+            refreshAgentHookStatus()
+            agentHooksStatusMessage = message
         }
-        refreshAgentHookStatus()
     }
 
     func uninstallAgentHooks() {
         log("model.hooks.uninstall.start")
         do {
-            try AgentHookInstaller.codex.uninstall(codexHome: codexHome, helperPath: Self.agentHookBridgePath())
-            log("model.hooks.uninstall.done")
+            let helperPath = Self.agentHookBridgePath()
+            try AgentHookInstaller.codex.uninstall(codexHome: codexHome, helperPath: helperPath)
+            try AgentHookInstaller.cursor.uninstall(cursorHome: cursorHome, helperPath: helperPath)
+            refreshAgentHookStatus()
+            agentHooksStatusMessage = agentHooksHasManaged
+                ? "Uninstall incomplete. Some hooks remain."
+                : "Hooks removed."
+            log("model.hooks.uninstall.done \(agentHooksStatusSummary)")
         } catch {
+            let message = "Uninstall failed: \(error.localizedDescription)"
             NSLog("[AgentCompanion] Failed to uninstall agent hooks: \(error)")
             log("model.hooks.uninstall.failed error=\(Self.logField(String(describing: error)))")
+            refreshAgentHookStatus()
+            agentHooksStatusMessage = message
         }
-        refreshAgentHookStatus()
     }
 
     func handle(_ event: AgentCompanionHookEvent) {
@@ -1069,7 +1168,11 @@ final class AgentCompanionModel: ObservableObject {
     }
 
     private func syncInstalledAgentHooksIfNeeded() {
-        guard AgentHookInstaller.codex.hasManagedHooks(codexHome: codexHome, helperPath: Self.agentHookBridgePath()) || agentHooksInstalled else {
+        let helperPath = Self.agentHookBridgePath()
+        guard AgentHookInstaller.codex.hasManagedHooks(codexHome: codexHome, helperPath: helperPath)
+            || AgentHookInstaller.cursor.hasManagedHooks(cursorHome: cursorHome, helperPath: helperPath)
+            || agentHooksHasManaged
+            || agentHooksInstalledCount > 0 else {
             refreshAgentHookStatus()
             return
         }
@@ -1085,13 +1188,30 @@ final class AgentCompanionModel: ObservableObject {
                     .appendingPathComponent("lofii-agent-hook")
             )
         }
-        candidates.append(
-            URL(fileURLWithPath: fileManager.currentDirectoryPath)
-                .appendingPathComponent(".build/debug/lofii-agent-hook")
-        )
 
-        return candidates.first { url in
-            fileManager.isExecutableFile(atPath: url.path)
-        }?.path
+        let home = fileManager.homeDirectoryForCurrentUser.path
+        let projectRoots = [
+            fileManager.currentDirectoryPath,
+            "\(home)/dev/lofii",
+        ]
+        let buildSubpaths = [
+            ".build/debug/lofii-agent-hook",
+            ".build/arm64-apple-macosx/debug/lofii-agent-hook",
+        ]
+        for root in projectRoots where !root.isEmpty {
+            for subpath in buildSubpaths {
+                candidates.append(URL(fileURLWithPath: root).appendingPathComponent(subpath))
+            }
+        }
+
+        var seen = Set<String>()
+        for url in candidates {
+            let path = url.standardizedFileURL.path
+            guard seen.insert(path).inserted else { continue }
+            if fileManager.isExecutableFile(atPath: path) {
+                return path
+            }
+        }
+        return nil
     }
 }

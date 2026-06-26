@@ -1169,8 +1169,6 @@ final class AppModel: ObservableObject {
     private static let currentVisualMediaIDKey = "lofii.currentVisualMediaID"
     private static let selectedPresetIDKey = "lofii.selectedPresetID"
     private static let alwaysOnTopKey = "lofii.alwaysOnTop"
-    private static let defaultCurrentVisualMediaID = "builtin-gif:xUOwGcu6wd0cXBj5n2"
-
     private static func loadBadgeSize() -> BadgeSize {
         guard let raw = UserDefaults.standard.string(forKey: badgeSizeKey),
               let value = BadgeSize(rawValue: raw)
@@ -1312,7 +1310,7 @@ final class AppModel: ObservableObject {
     }
 
     private static func loadCurrentVisualMediaID() -> String? {
-        UserDefaults.standard.string(forKey: currentVisualMediaIDKey) ?? defaultCurrentVisualMediaID
+        UserDefaults.standard.string(forKey: currentVisualMediaIDKey)
     }
 
     private static func loadCurrentSceneID() -> String? {
@@ -1591,6 +1589,10 @@ final class AppModel: ObservableObject {
         effectiveVisualMediaAssets
     }
 
+    var selectableVisualMediaChoices: [VisualMediaAsset] {
+        visualMediaAssets
+    }
+
     var currentVisualMedia: VisualMediaAsset? {
         let assets = effectiveVisualMediaAssets
         guard !assets.isEmpty else { return nil }
@@ -1640,6 +1642,7 @@ final class AppModel: ObservableObject {
     }
 
     func selectVisualMedia(_ asset: VisualMediaAsset) {
+        guard selectableVisualMediaChoices.contains(asset) else { return }
         setCurrentVisualMediaID(asset.id, reason: "explicit-select")
         if let index = effectiveVisualMediaAssets.firstIndex(of: asset) {
             currentVisualMediaIndex = index
@@ -1655,15 +1658,19 @@ final class AppModel: ObservableObject {
             setCurrentVisualMediaID(nil, reason: "no-effective-assets")
             return
         }
-        if let currentVisualMediaID,
-           assets.contains(where: { $0.id == currentVisualMediaID }) {
+        guard let currentVisualMediaID else {
+            logVisualMedia(
+                "selection-random reason=no-explicit-selection scope=\(visualMediaLibraryScope.rawValue) index=\(currentVisualMediaIndex) effectiveCount=\(assets.count)"
+            )
+            return
+        }
+        if assets.contains(where: { $0.id == currentVisualMediaID }) {
             logVisualMedia(
                 "selection-kept reason=existing scope=\(visualMediaLibraryScope.rawValue) selected=\"\(currentVisualMediaID)\" effectiveCount=\(assets.count)"
             )
             return
         }
-        let idx = ((currentVisualMediaIndex % assets.count) + assets.count) % assets.count
-        setCurrentVisualMediaID(assets[idx].id, reason: "repair-missing-selection")
+        setCurrentVisualMediaID(nil, reason: "clear-missing-selection")
     }
 
     private func setCurrentVisualMediaID(_ id: String?, reason: String) {

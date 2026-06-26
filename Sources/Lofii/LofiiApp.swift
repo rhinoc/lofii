@@ -11,20 +11,22 @@ struct LofiiApp: App {
     @StateObject private var agentCompanion = AgentCompanionModel(visualUpdateThrottle: 0.45)
     @StateObject private var menuDebugRevealMonitor = MenuDebugRevealMonitor()
     @StateObject private var loginItemController = LoginItemController()
+    @StateObject private var updateReminder: SparkleUpdateReminder
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     /// Sparkle auto-update (feed + EdDSA public key in embedded `Info.plist`).
     private let updaterController: SPUStandardUpdaterController
+    private let updaterUserDriverDelegate: SparkleUpdateUserDriverDelegate
 
     init() {
+        let updateReminder = SparkleUpdateReminder()
+        _updateReminder = StateObject(wrappedValue: updateReminder)
+        updaterUserDriverDelegate = SparkleUpdateUserDriverDelegate(reminder: updateReminder)
         updaterController = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
-            userDriverDelegate: nil
+            userDriverDelegate: updaterUserDriverDelegate
         )
-        if updaterController.updater.automaticallyChecksForUpdates {
-            updaterController.updater.checkForUpdatesInBackground()
-        }
         // Register bundled text/icon fonts before any view tries to use them.
         // Doing it in App.init guarantees they're resolvable on the very
         // first render (including SwiftUI previews) — `Font.pixel(...)`
@@ -109,6 +111,14 @@ struct LofiiApp: App {
 
                 Divider()
 
+                if updateReminder.hasPendingUpdate {
+                    Button(updateReminder.menuTitle) {
+                        updateReminder.showPendingUpdate(using: updaterController)
+                    }
+
+                    Divider()
+                }
+
                 Button("Check for Updates…") {
                     updaterController.checkForUpdates(nil)
                 }
@@ -122,7 +132,7 @@ struct LofiiApp: App {
             }
         }
 
-        MenuBarExtra("lofii", systemImage: "radio") {
+        MenuBarExtra("lofii", systemImage: updateReminder.hasPendingUpdate ? "arrow.down.circle.fill" : "radio") {
             Button("Toggle Widget") {
                 toggleWidgetWindow()
             }
@@ -170,6 +180,14 @@ struct LofiiApp: App {
                 Divider()
             }
 
+            if updateReminder.hasPendingUpdate {
+                Button(updateReminder.menuTitle) {
+                    updateReminder.showPendingUpdate(using: updaterController)
+                }
+
+                Divider()
+            }
+
             Button("Check for Updates…") {
                 updaterController.checkForUpdates(nil)
             }
@@ -202,6 +220,79 @@ struct LofiiApp: App {
     }
 
     @Environment(\.openWindow) private var openWindow
+}
+
+@MainActor
+private final class SparkleUpdateReminder: ObservableObject {
+    @Published private var pendingDisplayVersion: String?
+
+    var hasPendingUpdate: Bool {
+        pendingDisplayVersion != nil
+    }
+
+    var menuTitle: String {
+        guard let pendingDisplayVersion else {
+            return "Update Available…"
+        }
+        return "Update Available: \(pendingDisplayVersion)…"
+    }
+
+    func setPendingUpdate(displayVersion: String) {
+        pendingDisplayVersion = displayVersion
+    }
+
+    func clearPendingUpdate() {
+        pendingDisplayVersion = nil
+    }
+
+    func showPendingUpdate(using updaterController: SPUStandardUpdaterController) {
+        updaterController.checkForUpdates(nil)
+    }
+}
+
+private final class SparkleUpdateUserDriverDelegate: NSObject, SPUStandardUserDriverDelegate {
+    private weak var reminder: SparkleUpdateReminder?
+
+    init(reminder: SparkleUpdateReminder) {
+        self.reminder = reminder
+    }
+
+    var supportsGentleScheduledUpdateReminders: Bool {
+        true
+    }
+
+    func standardUserDriverShouldHandleShowingScheduledUpdate(
+        _ update: SUAppcastItem,
+        andInImmediateFocus immediateFocus: Bool
+    ) -> Bool {
+        immediateFocus
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool,
+        forUpdate update: SUAppcastItem,
+        state: SPUUserUpdateState
+    ) {
+        Task { @MainActor [weak reminder] in
+            if state.userInitiated || handleShowingUpdate {
+                reminder?.clearPendingUpdate()
+            } else {
+                reminder?.setPendingUpdate(displayVersion: update.displayVersionString)
+            }
+        }
+    }
+
+    func standardUserDriverDidReceiveUserAttention(forUpdate update: SUAppcastItem) {
+        Task { @MainActor [weak reminder] in
+            reminder?.clearPendingUpdate()
+        }
+    }
+
+    func standardUserDriverWillFinishUpdateSession() {
+        Task { @MainActor [weak reminder] in
+            reminder?.clearPendingUpdate()
+        }
+    }
 }
 
 @MainActor

@@ -1826,6 +1826,10 @@ private struct TrackCoverSceneView: View {
     @State private var localURL: URL?
     @State private var loadError: String?
     @State private var firstFrameReadyURL: URL?
+    @State private var transitionSnowURL: URL?
+    @State private var transitionSnowOpacity: Double = 1
+    @State private var darkFieldOpacity: Double = 0
+    @State private var lastSettledArtworkKey: String?
 
     private var artworkKey: String {
         track?.image?.absoluteString ?? "no-cover"
@@ -1880,6 +1884,18 @@ private struct TrackCoverSceneView: View {
                 .padding(10)
                 .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: WidgetChromeMetrics.contentCornerRadius))
             }
+
+            if let transitionSnowURL {
+                SnowOverlayView(url: transitionSnowURL)
+                    .opacity(transitionSnowOpacity)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+            }
+
+            Color.black
+                .opacity(darkFieldOpacity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
         }
         .task(id: artworkKey) {
             await loadCover()
@@ -1905,28 +1921,73 @@ private struct TrackCoverSceneView: View {
         model.resetVisualStageLoadingGate(updateBongoLayer: false)
         guard let artworkURL = track?.image else {
             localURL = nil
+            lastSettledArtworkKey = nil
+            firstFrameReadyURL = nil
             loadError = nil
+            darkFieldOpacity = 0
+            transitionSnowOpacity = 1
+            transitionSnowURL = nil
             notifyCoverReady()
             return
         }
 
+        if lastSettledArtworkKey != artworkURL.absoluteString {
+            firstFrameReadyURL = nil
+        }
         loadError = nil
-        if let cached = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL) {
-            localURL = cached
+        let diskCached = TrackArtworkCache.cachedURLIfAvailable(for: artworkURL)
+
+        if let diskCached,
+           localURL == diskCached,
+           lastSettledArtworkKey == artworkURL.absoluteString,
+           transitionSnowURL == nil {
+            darkFieldOpacity = 0
+            transitionSnowOpacity = 1
+            transitionSnowURL = nil
+            notifyCoverReady()
             return
         }
+
+        let keyChanged = lastSettledArtworkKey != nil && lastSettledArtworkKey != artworkURL.absoluteString
+        if let snow = await GifCache.shared.randomCachedStatic() {
+            transitionSnowURL = snow
+        } else if transitionSnowURL == nil {
+            transitionSnowURL = GifCache.bundledSnowOverlayURL()
+        }
+        TransitionSnowStyle.fadeInSnowOpacity { transitionSnowOpacity = $0 }
 
         do {
             let url = try await TrackArtworkCache.ensureLocal(for: artworkURL)
             guard !Task.isCancelled else { return }
             localURL = url
+            lastSettledArtworkKey = artworkURL.absoluteString
             loadError = nil
         } catch {
             guard !Task.isCancelled else { return }
-            localURL = nil
-            loadError = "Cover unavailable"
+            localURL = diskCached
+            lastSettledArtworkKey = artworkURL.absoluteString
+            loadError = diskCached == nil ? "Cover unavailable" : nil
             notifyCoverReady()
         }
+
+        guard !Task.isCancelled, loadError == nil else {
+            darkFieldOpacity = 0
+            transitionSnowOpacity = 1
+            transitionSnowURL = nil
+            return
+        }
+
+        if keyChanged {
+            try? await Task.sleep(
+                nanoseconds: UInt64(TransitionSnowStyle.plateauAfterContentChange * 1_000_000_000)
+            )
+        }
+        guard !Task.isCancelled else { return }
+        await TransitionSnowStyle.darkFieldCoverThenClearSnow(
+            setDarkField: { darkFieldOpacity = $0 },
+            clearSnowURL: { transitionSnowURL = nil },
+            resetSnowOpacity: { transitionSnowOpacity = 1 }
+        )
     }
 }
 
@@ -1954,7 +2015,7 @@ private struct TrackBadge: View {
         let hasPlayableReadout = model.currentTrack != nil || model.isCurrentStationEmbeddedVideo
 
         VStack(spacing: 1) {
-            if model.isReadoutVisible {
+            if model.isReadoutVisible, model.readoutFontSettings.waveform {
                 // `NSViewRepresentable` expands to fill a proposed max width.
                 // Pin the waveform to a fixed 120×14pt slot inside an `HStack`
                 // so bar math always matches the design width and lines up with
@@ -3141,15 +3202,6 @@ private struct SettingsOverlay: View {
                 textSize: textSize
             )
 
-            SettingsChoiceRow(
-                title: "Waveform",
-                choices: ReadoutWaveformStyle.allCases,
-                selection: readoutChoice(\.waveformStyle),
-                label: { $0.label },
-                accent: model.accent,
-                textSize: textSize
-            )
-
             SettingsToggleRow(
                 title: "Text Shadow",
                 isOn: readoutBool(\.textShadow),
@@ -3160,6 +3212,22 @@ private struct SettingsOverlay: View {
             SettingsToggleRow(
                 title: "Text Glow",
                 isOn: readoutBool(\.textGlow),
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsChoiceRow(
+                title: "Waveform",
+                choices: ReadoutWaveformStyle.allCases,
+                selection: readoutChoice(\.waveformStyle),
+                label: { $0.label },
+                accent: model.accent,
+                textSize: textSize
+            )
+
+            SettingsToggleRow(
+                title: "Waveform Enabled",
+                isOn: readoutBool(\.waveform),
                 accent: model.accent,
                 textSize: textSize
             )
@@ -3329,13 +3397,32 @@ private struct SettingsOverlay: View {
 
             SettingsDualActionRow(
                 title: "Agent Hooks",
-                primaryTitle: agentCompanion.agentHooksInstalled ? "Reinstall" : "Install",
+                primaryTitle: agentCompanion.agentHooksInstallTitle,
                 secondaryTitle: "Uninstall",
                 accent: model.accent,
                 textSize: textSize,
+                primaryDisabled: !agentCompanion.agentHooksInstallEnabled,
+                secondaryDisabled: !agentCompanion.agentHooksUninstallEnabled,
                 primaryAction: agentCompanion.installAgentHooks,
                 secondaryAction: agentCompanion.uninstallAgentHooks
             )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(agentCompanion.agentHooksStatusSummary.uppercased())
+                    .font(.pixel(size: max(8, textSize - 2)))
+                    .foregroundStyle(.white.opacity(0.52))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.62)
+                if let message = agentCompanion.agentHooksStatusMessage {
+                    Text(message.uppercased())
+                        .font(.pixel(size: max(8, textSize - 2)))
+                        .foregroundStyle(model.accent.opacity(0.92))
+                        .lineLimit(3)
+                        .minimumScaleFactor(0.62)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 126)
 
             ForEach(AgentHookEvent.allCases) { event in
                 SettingsToggleRow(
@@ -3396,10 +3483,11 @@ private struct SettingsOverlay: View {
                 textSize: textSize
             )
 
-            if let selectedMedia = model.currentVisualMedia {
+            if let selectedMedia = model.currentVisualMedia,
+               !model.selectableVisualMediaChoices.isEmpty {
                 SettingsModelPickerRow(
                     title: "Media",
-                    choices: model.effectiveVisualMediaChoices,
+                    choices: model.selectableVisualMediaChoices,
                     selection: binding(
                         get: { model.currentVisualMedia ?? selectedMedia },
                         set: { model.selectVisualMedia($0) }
@@ -4066,6 +4154,8 @@ private struct SettingsDualActionRow: View {
     let secondaryTitle: String
     let accent: Color
     let textSize: CGFloat
+    var primaryDisabled = false
+    var secondaryDisabled = false
     let primaryAction: () -> Void
     let secondaryAction: () -> Void
 
@@ -4085,6 +4175,7 @@ private struct SettingsDualActionRow: View {
                 actionButton(
                     title: primaryTitle,
                     hovering: hoveringPrimary,
+                    disabled: primaryDisabled,
                     action: primaryAction
                 )
                 .onHover { hoveringPrimary = $0 }
@@ -4092,6 +4183,7 @@ private struct SettingsDualActionRow: View {
                 actionButton(
                     title: secondaryTitle,
                     hovering: hoveringSecondary,
+                    disabled: secondaryDisabled,
                     action: secondaryAction
                 )
                 .onHover { hoveringSecondary = $0 }
@@ -4100,19 +4192,29 @@ private struct SettingsDualActionRow: View {
         .frame(minHeight: 24)
     }
 
-    private func actionButton(title: String, hovering: Bool, action: @escaping () -> Void) -> some View {
+    private func actionButton(
+        title: String,
+        hovering: Bool,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: action) {
             Text(title.uppercased())
                 .font(.pixel(size: max(9, textSize - 1)))
-                .foregroundStyle(hovering ? .white : accent)
+                .foregroundStyle(
+                    disabled
+                        ? .white.opacity(0.28)
+                        : (hovering ? .white : accent)
+                )
                 .lineLimit(1)
                 .minimumScaleFactor(0.58)
                 .frame(maxWidth: .infinity, minHeight: 22)
                 .padding(.horizontal, 3)
-                .background(hovering ? Color.white.opacity(0.085) : Color.clear)
+                .background(!disabled && hovering ? Color.white.opacity(0.085) : Color.clear)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .disabled(disabled)
     }
 }
 
@@ -4314,115 +4416,9 @@ enum SettingsContextMenu {
         menu.autoenablesItems = false
         agentCompanion.refreshAgentHookStatus()
 
-        // --- Readout submenu ---
-        let readoutItem = NSMenuItem(title: "Readout", action: nil, keyEquivalent: "")
-        let readoutMenu = NSMenu()
-        let visibleItem = NSMenuItem(
-            title: "Enabled",
-            action: #selector(MenuTarget.toggleReadoutVisibility(_:)),
-            keyEquivalent: ""
-        )
-        visibleItem.state = model.isReadoutVisible ? .on : .off
-        visibleItem.target = MenuTarget.shared
-        readoutMenu.addItem(visibleItem)
-        readoutMenu.addItem(.separator())
-
-        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
-        let sizeMenu = NSMenu()
-        for size in BadgeSize.allCases {
-            let item = NSMenuItem(
-                title: size.label,
-                action: #selector(MenuTarget.selectSize(_:)),
-                keyEquivalent: ""
-            )
-            item.representedObject = size.rawValue
-            item.state = (model.badgeSize == size) ? .on : .off
-            item.target = MenuTarget.shared
-            sizeMenu.addItem(item)
-        }
-        sizeItem.submenu = sizeMenu
-        readoutMenu.addItem(sizeItem)
-
-        let weightItem = NSMenuItem(title: "Weight", action: nil, keyEquivalent: "")
-        let weightMenu = NSMenu()
-        for weight in ReadoutFontWeight.allCases {
-            let item = NSMenuItem(
-                title: weight.label,
-                action: #selector(MenuTarget.selectReadoutWeight(_:)),
-                keyEquivalent: ""
-            )
-            item.representedObject = weight.rawValue
-            item.state = (model.readoutFontSettings.weight == weight) ? .on : .off
-            item.target = MenuTarget.shared
-            weightMenu.addItem(item)
-        }
-        weightItem.submenu = weightMenu
-        readoutMenu.addItem(weightItem)
-
-        let shapeItem = NSMenuItem(title: "Element Shape", action: nil, keyEquivalent: "")
-        let shapeMenu = NSMenu()
-        for shape in ReadoutFontElementShape.allCases {
-            let item = NSMenuItem(
-                title: shape.label,
-                action: #selector(MenuTarget.selectReadoutElementShape(_:)),
-                keyEquivalent: ""
-            )
-            item.representedObject = shape.rawValue
-            item.state = (model.readoutFontSettings.elementShape == shape) ? .on : .off
-            item.target = MenuTarget.shared
-            shapeMenu.addItem(item)
-        }
-        shapeItem.submenu = shapeMenu
-        readoutMenu.addItem(shapeItem)
-
-        let waveformItem = NSMenuItem(title: "Waveform", action: nil, keyEquivalent: "")
-        let waveformMenu = NSMenu()
-        for style in ReadoutWaveformStyle.allCases {
-            let item = NSMenuItem(
-                title: style.menuLabel,
-                action: #selector(MenuTarget.selectReadoutWaveformStyle(_:)),
-                keyEquivalent: ""
-            )
-            item.representedObject = style.rawValue
-            item.state = (model.readoutFontSettings.waveformStyle == style) ? .on : .off
-            item.target = MenuTarget.shared
-            waveformMenu.addItem(item)
-        }
-        waveformItem.submenu = waveformMenu
-        readoutMenu.addItem(waveformItem)
-
-        let readoutShadowItem = NSMenuItem(
-            title: "Text Shadow",
-            action: #selector(MenuTarget.toggleReadoutTextShadow(_:)),
-            keyEquivalent: ""
-        )
-        readoutShadowItem.state = model.readoutFontSettings.textShadow ? .on : .off
-        readoutShadowItem.target = MenuTarget.shared
-        readoutMenu.addItem(readoutShadowItem)
-
-        let textGlowItem = NSMenuItem(
-            title: "Text Glow",
-            action: #selector(MenuTarget.toggleReadoutTextGlow(_:)),
-            keyEquivalent: ""
-        )
-        textGlowItem.state = model.readoutFontSettings.textGlow ? .on : .off
-        textGlowItem.target = MenuTarget.shared
-        readoutMenu.addItem(textGlowItem)
-
-        let posItem = NSMenuItem(title: "Alignment", action: nil, keyEquivalent: "")
-        let posMenu = NSMenu()
-        addPositionRows(
-            to: posMenu,
-            rows: badgePositionRows,
-            selected: model.badgePosition,
-            title: \.label,
-            rawValue: \.rawValue,
-            action: #selector(MenuTarget.selectPosition(_:))
-        )
-        posItem.submenu = posMenu
-        readoutMenu.addItem(posItem)
-        readoutItem.submenu = readoutMenu
-        menu.addItem(readoutItem)
+        // --- Visuals submenu ---
+        let visualsItem = NSMenuItem(title: "Visuals", action: nil, keyEquivalent: "")
+        let visualsMenu = NSMenu()
 
         let sceneRoot = NSMenuItem(title: "Scene", action: nil, keyEquivalent: "")
         let sceneMenu = NSMenu()
@@ -4438,7 +4434,7 @@ enum SettingsContextMenu {
             sceneMenu.addItem(item)
         }
         sceneRoot.submenu = sceneMenu
-        menu.addItem(sceneRoot)
+        visualsMenu.addItem(sceneRoot)
 
         let mediaRoot = NSMenuItem(title: "Media", action: nil, keyEquivalent: "")
         let mediaMenu = NSMenu()
@@ -4458,9 +4454,18 @@ enum SettingsContextMenu {
         libraryItem.submenu = libraryMenu
         mediaMenu.addItem(libraryItem)
 
-        let choices = model.effectiveVisualMediaChoices
+        let mediaControlsActive = model.visualMode == .media
+        if !mediaControlsActive {
+            let inactiveItem = NSMenuItem(title: "Inactive in \(model.visualMode.label) Mode", action: nil, keyEquivalent: "")
+            inactiveItem.isEnabled = false
+            mediaMenu.addItem(inactiveItem)
+            mediaMenu.addItem(.separator())
+        }
+
+        let choices = model.selectableVisualMediaChoices
+        libraryItem.isEnabled = mediaControlsActive
         if !choices.isEmpty {
-            let selectedItem = NSMenuItem(title: "Selected", action: nil, keyEquivalent: "")
+            let selectedItem = NSMenuItem(title: "Select Media", action: nil, keyEquivalent: "")
             let selectedMenu = NSMenu()
             for media in choices.prefix(40) {
                 let item = NSMenuItem(
@@ -4474,6 +4479,7 @@ enum SettingsContextMenu {
                 selectedMenu.addItem(item)
             }
             selectedItem.submenu = selectedMenu
+            selectedItem.isEnabled = mediaControlsActive
             mediaMenu.addItem(selectedItem)
         }
 
@@ -4493,7 +4499,137 @@ enum SettingsContextMenu {
         reloadMediaItem.target = MenuTarget.shared
         mediaMenu.addItem(reloadMediaItem)
         mediaRoot.submenu = mediaMenu
-        menu.addItem(mediaRoot)
+        visualsMenu.addItem(mediaRoot)
+
+        visualsItem.submenu = visualsMenu
+        menu.addItem(visualsItem)
+
+        // --- Readout submenu ---
+        let readoutItem = NSMenuItem(title: "Readout", action: nil, keyEquivalent: "")
+        let readoutMenu = NSMenu()
+        let visibleItem = NSMenuItem(
+            title: "Enabled",
+            action: #selector(MenuTarget.toggleReadoutVisibility(_:)),
+            keyEquivalent: ""
+        )
+        visibleItem.state = model.isReadoutVisible ? .on : .off
+        visibleItem.target = MenuTarget.shared
+        readoutMenu.addItem(visibleItem)
+        readoutMenu.addItem(.separator())
+
+        let posItem = NSMenuItem(title: "Alignment", action: nil, keyEquivalent: "")
+        let posMenu = NSMenu()
+        addPositionRows(
+            to: posMenu,
+            rows: badgePositionRows,
+            selected: model.badgePosition,
+            title: \.label,
+            rawValue: \.rawValue,
+            action: #selector(MenuTarget.selectPosition(_:))
+        )
+        posItem.submenu = posMenu
+        readoutMenu.addItem(posItem)
+
+        let sizeItem = NSMenuItem(title: "Size", action: nil, keyEquivalent: "")
+        let sizeMenu = NSMenu()
+        for size in BadgeSize.allCases {
+            let item = NSMenuItem(
+                title: size.label,
+                action: #selector(MenuTarget.selectSize(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = size.rawValue
+            item.state = (model.badgeSize == size) ? .on : .off
+            item.target = MenuTarget.shared
+            sizeMenu.addItem(item)
+        }
+        sizeItem.submenu = sizeMenu
+        readoutMenu.addItem(sizeItem)
+        readoutMenu.addItem(.separator())
+
+        let fontItem = NSMenuItem(title: "Font", action: nil, keyEquivalent: "")
+        let fontMenu = NSMenu()
+
+        let weightItem = NSMenuItem(title: "Weight", action: nil, keyEquivalent: "")
+        let weightMenu = NSMenu()
+        for weight in ReadoutFontWeight.allCases {
+            let item = NSMenuItem(
+                title: weight.label,
+                action: #selector(MenuTarget.selectReadoutWeight(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = weight.rawValue
+            item.state = (model.readoutFontSettings.weight == weight) ? .on : .off
+            item.target = MenuTarget.shared
+            weightMenu.addItem(item)
+        }
+        weightItem.submenu = weightMenu
+        fontMenu.addItem(weightItem)
+
+        let shapeItem = NSMenuItem(title: "Element Shape", action: nil, keyEquivalent: "")
+        let shapeMenu = NSMenu()
+        for shape in ReadoutFontElementShape.allCases {
+            let item = NSMenuItem(
+                title: shape.label,
+                action: #selector(MenuTarget.selectReadoutElementShape(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = shape.rawValue
+            item.state = (model.readoutFontSettings.elementShape == shape) ? .on : .off
+            item.target = MenuTarget.shared
+            shapeMenu.addItem(item)
+        }
+        shapeItem.submenu = shapeMenu
+        fontMenu.addItem(shapeItem)
+        fontMenu.addItem(.separator())
+
+        let readoutShadowItem = NSMenuItem(
+            title: "Text Shadow",
+            action: #selector(MenuTarget.toggleReadoutTextShadow(_:)),
+            keyEquivalent: ""
+        )
+        readoutShadowItem.state = model.readoutFontSettings.textShadow ? .on : .off
+        readoutShadowItem.target = MenuTarget.shared
+        fontMenu.addItem(readoutShadowItem)
+
+        let textGlowItem = NSMenuItem(
+            title: "Text Glow",
+            action: #selector(MenuTarget.toggleReadoutTextGlow(_:)),
+            keyEquivalent: ""
+        )
+        textGlowItem.state = model.readoutFontSettings.textGlow ? .on : .off
+        textGlowItem.target = MenuTarget.shared
+        fontMenu.addItem(textGlowItem)
+        fontItem.submenu = fontMenu
+        readoutMenu.addItem(fontItem)
+        readoutMenu.addItem(.separator())
+
+        let waveformItem = NSMenuItem(title: "Waveform", action: nil, keyEquivalent: "")
+        let waveformMenu = NSMenu()
+        let waveformEnabledItem = NSMenuItem(
+            title: "Enabled",
+            action: #selector(MenuTarget.toggleReadoutWaveform(_:)),
+            keyEquivalent: ""
+        )
+        waveformEnabledItem.state = model.readoutFontSettings.waveform ? .on : .off
+        waveformEnabledItem.target = MenuTarget.shared
+        waveformMenu.addItem(waveformEnabledItem)
+        waveformMenu.addItem(.separator())
+        for style in ReadoutWaveformStyle.allCases {
+            let item = NSMenuItem(
+                title: style.menuLabel,
+                action: #selector(MenuTarget.selectReadoutWaveformStyle(_:)),
+                keyEquivalent: ""
+            )
+            item.representedObject = style.rawValue
+            item.state = (model.readoutFontSettings.waveformStyle == style) ? .on : .off
+            item.target = MenuTarget.shared
+            waveformMenu.addItem(item)
+        }
+        waveformItem.submenu = waveformMenu
+        readoutMenu.addItem(waveformItem)
+        readoutItem.submenu = readoutMenu
+        menu.addItem(readoutItem)
 
         let bongoRoot = NSMenuItem(title: "Bongo Cat", action: nil, keyEquivalent: "")
         let bongoMenu = NSMenu()
@@ -4506,6 +4642,7 @@ enum SettingsContextMenu {
         bongoEnabledItem.state = model.bongoOverlayVisible ? .on : .off
         bongoEnabledItem.target = MenuTarget.shared
         bongoMenu.addItem(bongoEnabledItem)
+        bongoMenu.addItem(.separator())
 
         let modelItem = NSMenuItem(title: "Model", action: nil, keyEquivalent: "")
         let modelMenu = NSMenu()
@@ -4564,15 +4701,6 @@ enum SettingsContextMenu {
             customItem.isEnabled = false
             bongoPosMenu.addItem(customItem)
         }
-        let bongoLockItem = NSMenuItem(
-            title: "Locked",
-            action: #selector(MenuTarget.toggleBongoStageDragLock(_:)),
-            keyEquivalent: ""
-        )
-        bongoLockItem.state = model.bongoStageDragLocked ? .on : .off
-        bongoLockItem.target = MenuTarget.shared
-        bongoPosMenu.addItem(bongoLockItem)
-        bongoPosMenu.addItem(.separator())
         addPositionRows(
             to: bongoPosMenu,
             rows: bongoPositionRows,
@@ -4581,6 +4709,15 @@ enum SettingsContextMenu {
             rawValue: \.rawValue,
             action: #selector(MenuTarget.selectBongoStageAnchor(_:))
         )
+        bongoPosMenu.addItem(.separator())
+        let bongoLockItem = NSMenuItem(
+            title: "Locked",
+            action: #selector(MenuTarget.toggleBongoStageDragLock(_:)),
+            keyEquivalent: ""
+        )
+        bongoLockItem.state = model.bongoStageDragLocked ? .on : .off
+        bongoLockItem.target = MenuTarget.shared
+        bongoPosMenu.addItem(bongoLockItem)
         bongoPosItem.submenu = bongoPosMenu
         bongoMenu.addItem(bongoPosItem)
 
@@ -4599,8 +4736,11 @@ enum SettingsContextMenu {
         }
         bongoSizeItem.submenu = bongoSizeMenu
         bongoMenu.addItem(bongoSizeItem)
+        bongoMenu.addItem(.separator())
 
-        let bongoInputRateItem = NSMenuItem(title: "Input Rate", action: nil, keyEquivalent: "")
+        let bongoInputItem = NSMenuItem(title: "Input", action: nil, keyEquivalent: "")
+        let bongoInputMenu = NSMenu()
+        let bongoInputRateItem = NSMenuItem(title: "Rate", action: nil, keyEquivalent: "")
         let bongoInputRateMenu = NSMenu()
         for rate in BongoInputTickRate.allCases {
             let item = NSMenuItem(
@@ -4614,7 +4754,7 @@ enum SettingsContextMenu {
             bongoInputRateMenu.addItem(item)
         }
         bongoInputRateItem.submenu = bongoInputRateMenu
-        bongoMenu.addItem(bongoInputRateItem)
+        bongoInputMenu.addItem(bongoInputRateItem)
 
         let bongoMouseSpaceItem = NSMenuItem(title: "Mouse Space", action: nil, keyEquivalent: "")
         let bongoMouseSpaceMenu = NSMenu()
@@ -4630,8 +4770,10 @@ enum SettingsContextMenu {
             bongoMouseSpaceMenu.addItem(item)
         }
         bongoMouseSpaceItem.submenu = bongoMouseSpaceMenu
-        bongoMenu.addItem(bongoMouseSpaceItem)
+        bongoInputMenu.addItem(bongoMouseSpaceItem)
 
+        bongoInputItem.submenu = bongoInputMenu
+        bongoMenu.addItem(bongoInputItem)
         bongoMenu.addItem(.separator())
 
         let desktopItem = NSMenuItem(title: "Desktop", action: nil, keyEquivalent: "")
@@ -4722,10 +4864,11 @@ enum SettingsContextMenu {
         agentCompanionMenu.addItem(.separator())
 
         let installAgentHooksItem = NSMenuItem(
-            title: agentCompanion.agentHooksInstalled ? "Reinstall Agent Hooks" : "Install Agent Hooks",
+            title: "\(agentCompanion.agentHooksInstallTitle) Agent Hooks",
             action: #selector(MenuTarget.installAgentHooks(_:)),
             keyEquivalent: ""
         )
+        installAgentHooksItem.isEnabled = agentCompanion.agentHooksInstallEnabled
         installAgentHooksItem.target = MenuTarget.shared
         agentCompanionMenu.addItem(installAgentHooksItem)
 
@@ -4734,6 +4877,7 @@ enum SettingsContextMenu {
             action: #selector(MenuTarget.uninstallAgentHooks(_:)),
             keyEquivalent: ""
         )
+        uninstallAgentHooksItem.isEnabled = agentCompanion.agentHooksUninstallEnabled
         uninstallAgentHooksItem.target = MenuTarget.shared
         agentCompanionMenu.addItem(uninstallAgentHooksItem)
 
@@ -5082,6 +5226,13 @@ final class MenuTarget: NSObject {
         model.readoutFontSettings = s
     }
 
+    @objc func toggleReadoutWaveform(_ sender: NSMenuItem) {
+        guard let model else { return }
+        var s = model.readoutFontSettings
+        s.waveform.toggle()
+        model.readoutFontSettings = s
+    }
+
     @objc func toggleReadoutTextShadow(_ sender: NSMenuItem) {
         guard let model else { return }
         var s = model.readoutFontSettings
@@ -5107,7 +5258,7 @@ final class MenuTarget: NSObject {
     @objc func selectVisualMedia(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String,
               let model,
-              let media = model.effectiveVisualMediaChoices.first(where: { $0.id == id })
+              let media = model.selectableVisualMediaChoices.first(where: { $0.id == id })
         else { return }
         model.selectVisualMedia(media)
     }
