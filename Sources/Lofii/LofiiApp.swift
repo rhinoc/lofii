@@ -132,7 +132,7 @@ struct LofiiApp: App {
             }
         }
 
-        MenuBarExtra("lofii", systemImage: updateReminder.hasPendingUpdate ? "arrow.down.circle.fill" : "radio") {
+        MenuBarExtra {
             Button("Toggle Widget") {
                 toggleWidgetWindow()
             }
@@ -199,6 +199,14 @@ struct LofiiApp: App {
                 NSApp.terminate(nil)
             }
             .keyboardShortcut("q", modifiers: [.command])
+        } label: {
+            if updateReminder.hasPendingUpdate {
+                Label("lofii", systemImage: "arrow.down.circle.fill")
+            } else {
+                Image(nsImage: MenuBarIcon.image)
+                    .renderingMode(.template)
+                    .accessibilityLabel("lofii")
+            }
         }
     }
 

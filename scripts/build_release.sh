@@ -47,6 +47,7 @@ for name in Statics Fonts BongoCat AgentCompanion ShatteredGlass FrameworkMetall
 done
 cp "$METAL_SRC" "$APP/Contents/Resources/"
 cp "$ICON_SRC" "$APP/Contents/Resources/AppIcon.icns"
+cp "$LOFII_RES/MenuBarIcon.svg" "$APP/Contents/Resources/MenuBarIcon.svg"
 install_name_tool -change @rpath/libLive2DCubismCore.dylib \
   @executable_path/../Frameworks/libLive2DCubismCore.dylib \
   "$APP/Contents/MacOS/lofii"

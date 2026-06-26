@@ -78,8 +78,6 @@ jobs:
             xattr -dr com.apple.quarantine /Applications/lofii.app
             ```
 
-            Or **Control-click (right-click) the app → Open** once and confirm.
-
             More detail: [README — Install](https://github.com/${{ github.repository }}/blob/main/README.md#install) · [SPARKLE.md (section 7)](https://github.com/${{ github.repository }}/blob/main/SPARKLE.md#7-gatekeeper-quarantine-and-downloads-without-notarization)
 
       - name: Commit version bump

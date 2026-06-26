@@ -13,6 +13,7 @@ enum LofiiResources {
         ("FrameworkMetallibs", nil),
         ("ShatteredGlass", nil),
         ("AppIcon", "icns"),
+        ("MenuBarIcon", "svg"),
         ("StageMetalShaders", "metal"),
     ]
 

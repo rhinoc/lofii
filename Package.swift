@@ -84,6 +84,7 @@ let package = Package(
                 // prebuilt metallib is unavailable on the local machine.
                 .copy("Resources/FrameworkMetallibs"),
                 .copy("Resources/AppIcon.icns"),
+                .copy("Resources/MenuBarIcon.svg"),
                 // Single-stage Metal player used for video/GIF background
                 // rendering and native post-processing.
                 .process("StageMetalShaders.metal"),
