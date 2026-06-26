@@ -74,4 +74,4 @@ After opening `lofii-<version>-macos.dmg` and dragging the app to Applications, 
 xattr -dr com.apple.quarantine /Applications/lofii.app
 ```
 
-Or use **Control-click → Open** once on the app (macOS records a user-approved open). This is normal for ad-hoc or self-signed builds when the project does not ship a notarized Developer ID build. See also **Install from GitHub Releases** in `README.md`.
+This is normal for ad-hoc or self-signed builds when the project does not ship a notarized Developer ID build. See also **Install from GitHub Releases** in `README.md`.

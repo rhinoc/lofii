@@ -79,15 +79,13 @@ The DMG contains `lofii.app` and an **Applications** shortcut only — there is 
 
 ### First launch and Gatekeeper
 
-Browser downloads are tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If macOS warns that the app cannot be opened or is from an unidentified developer, use one of the options below after copying the app to **Applications**.
+Browser downloads are tagged with Gatekeeper **quarantine** (`com.apple.quarantine`). If macOS warns that the app cannot be opened or is from an unidentified developer, remove quarantine after copying the app to **Applications**.
 
 Remove quarantine from the installed app:
 
 ```bash
 xattr -dr com.apple.quarantine /Applications/lofii.app
 ```
-
-Or **Control-click (or right-click) → Open** on `lofii.app` once and confirm in the dialog. macOS records that exception for future launches.
 
 In-app updates (Sparkle) use the same DMG format; after an update finishes, drag the new app to **Applications** the same way if macOS leaves the updated bundle outside `/Applications`.
 
